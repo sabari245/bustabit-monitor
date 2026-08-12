@@ -12,11 +12,17 @@ export interface StoredGame {
   reconstructed?: boolean;
 }
 
+export interface AutomationScript {
+  id: string;
+  name: string;
+  code: string;
+  enabled: boolean;
+}
+
 export interface AutomationSettings {
   botToken: string;
   chatId: string;
-  script: string;
-  active: boolean;
+  scripts: AutomationScript[];
 }
 
 export interface TelegramResult {

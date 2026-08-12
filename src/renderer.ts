@@ -1,6 +1,12 @@
 import './index.css';
 import { HASH_POLL_SCRIPT } from './injected/hash-poll';
-import type { AutomationSettings, GameData, LogLevel, StoredGame } from './types';
+import type {
+  AutomationScript,
+  AutomationSettings,
+  GameData,
+  LogLevel,
+  StoredGame,
+} from './types';
 
 const BUSTABIT_URL = 'https://bustabit.com/play';
 const MAX_GAMES_IN_MEMORY = 100;
@@ -24,9 +30,16 @@ const developerModeEl = document.getElementById(
 const developerOnlyEls = document.querySelectorAll<HTMLElement>('.developer-only');
 const botTokenEl = document.getElementById('bot-token') as HTMLInputElement;
 const chatIdEl = document.getElementById('chat-id') as HTMLInputElement;
-const scriptEl = document.getElementById('script') as HTMLTextAreaElement;
-const runScriptEl = document.getElementById('run-script') as HTMLButtonElement;
-const stopScriptEl = document.getElementById('stop-script') as HTMLButtonElement;
+const saveCredentialsEl = document.getElementById('save-credentials') as HTMLButtonElement;
+const automationResultEl = document.getElementById('automation-result') as HTMLParagraphElement;
+const scriptsEl = document.getElementById('automation-scripts') as HTMLTableSectionElement;
+const addScriptEl = document.getElementById('add-script') as HTMLButtonElement;
+const scriptDialogEl = document.getElementById('script-dialog') as HTMLDialogElement;
+const scriptFormEl = document.getElementById('script-form') as HTMLFormElement;
+const scriptDialogTitleEl = document.getElementById('script-dialog-title') as HTMLHeadingElement;
+const closeScriptDialogEl = document.getElementById('close-script-dialog') as HTMLButtonElement;
+const scriptNameEl = document.getElementById('script-name') as HTMLInputElement;
+const scriptCodeEl = document.getElementById('script-code') as HTMLTextAreaElement;
 const copyPromptEl = document.getElementById('copy-prompt') as HTMLButtonElement;
 const refreshLogsEl = document.getElementById('refresh-logs') as HTMLButtonElement;
 const copyLogsEl = document.getElementById('copy-logs') as HTMLButtonElement;
@@ -41,17 +54,18 @@ const games: StoredGame[] = [];
 let automation: AutomationSettings = {
   botToken: '',
   chatId: '',
-  script: '',
-  active: false,
+  scripts: [],
 };
 let roundQueue = Promise.resolve();
 let displayedLogs = '';
 let developerMode = localStorage.getItem(DEVELOPER_MODE_KEY) === 'true';
+let editingScriptId: string | null = null;
+const scriptRunResults = new Map<string, { message: string; error: boolean }>();
 
 const CHATBOT_PROMPT = `I need you to write a JavaScript automation script for a desktop application called Bustabit Monitor.
 
 Context
-The application watches completed Bustabit game rounds. I will paste your JavaScript into the application's "Round script" editor and click "Run on new rounds". The complete script executes once after every newly completed round has been saved. It should decide whether a Telegram message needs to be sent. Do not write an entire application, Telegram client, HTML page, Node.js program, or installation instructions. Return only code that can be pasted directly into the script editor, unless I explicitly ask for an explanation.
+The application watches completed Bustabit game rounds. I will paste your JavaScript into the application's "Add round script" dialog, save it, and enable it in the scripts table. Every enabled script executes once after each newly completed round has been saved. It should decide whether a Telegram message needs to be sent. Do not write an entire application, Telegram client, HTML page, Node.js program, or installation instructions. Return only code that can be pasted directly into the script editor, unless I explicitly ask for an explanation.
 
 Runtime API
 The script body runs inside an async JavaScript function, so top-level await is supported. These four values are already available as variables. Do not import, declare, or mock them:
@@ -138,9 +152,15 @@ function setScriptResult(message: string, error = false) {
   scriptResultEl.classList.toggle('error', error);
 }
 
-function setAutomationStatus(active: boolean) {
-  automationStatusEl.textContent = active ? 'Running' : 'Stopped';
-  automationStatusEl.classList.toggle('running', active);
+function setAutomationResult(message: string, error = false) {
+  automationResultEl.textContent = message;
+  automationResultEl.classList.toggle('error', error);
+}
+
+function setAutomationStatus() {
+  const activeCount = automation.scripts.filter((script) => script.enabled).length;
+  automationStatusEl.textContent = `${activeCount} active`;
+  automationStatusEl.classList.toggle('running', activeCount > 0);
 }
 
 function setDeveloperMode(enabled: boolean) {
@@ -187,12 +207,12 @@ async function initialize() {
   automation = settings;
   botTokenEl.value = settings.botToken;
   chatIdEl.value = settings.chatId;
-  scriptEl.value = settings.script;
-  setAutomationStatus(settings.active);
+  setAutomationStatus();
+  renderAutomationScripts();
   renderGames();
   logRenderer('info', 'app', 'Renderer initialization completed', {
     recentRoundsLoaded: games.length,
-    automationActive: settings.active,
+    enabledScriptCount: settings.scripts.filter((script) => script.enabled).length,
   });
 }
 
@@ -312,45 +332,64 @@ webview.addEventListener('ipc-message', (event) => {
   }
 });
 
-runScriptEl.addEventListener('click', async () => {
-  const settings = readSettingsFromForm(true);
-  if (!settings.botToken || !settings.chatId) {
-    setScriptResult('Enter both the bot token and chat/user ID.', true);
+saveCredentialsEl.addEventListener('click', async () => {
+  automation = {
+    ...automation,
+    botToken: botTokenEl.value.trim(),
+    chatId: chatIdEl.value.trim(),
+  };
+  try {
+    await saveAutomationSettings();
+    setAutomationResult('Telegram connection saved.');
+  } catch (error) {
+    setAutomationResult(`Could not save: ${getErrorMessage(error)}`, true);
+  }
+});
+
+addScriptEl.addEventListener('click', () => openScriptDialog());
+
+closeScriptDialogEl.addEventListener('click', () => scriptDialogEl.close());
+
+scriptFormEl.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const name = scriptNameEl.value.trim();
+  const code = scriptCodeEl.value;
+  if (!name || !code.trim()) {
+    setScriptResult('Enter both a name and script code.', true);
     return;
   }
 
   try {
-    new AsyncFunction(
-      'round',
-      'recentRounds',
-      'sendMessage',
-      'getHistory',
-      settings.script,
-    );
-    await window.electronAPI.saveAutomationSettings(settings);
-    automation = settings;
-    setAutomationStatus(true);
-    setScriptResult('Saved. The script will run on each new round.');
-    logRenderer('info', 'automation', 'Automation enabled', {
-      scriptCharacters: settings.script.length,
+    new AsyncFunction('round', 'recentRounds', 'sendMessage', 'getHistory', code);
+    const existing = automation.scripts.find((script) => script.id === editingScriptId);
+    const script: AutomationScript = {
+      id: existing?.id ?? crypto.randomUUID(),
+      name,
+      code,
+      enabled: existing?.enabled ?? true,
+    };
+    automation = {
+      ...automation,
+      scripts: existing
+        ? automation.scripts.map((item) => item.id === script.id ? script : item)
+        : [...automation.scripts, script],
+    };
+    await saveAutomationSettings();
+    renderAutomationScripts();
+    scriptDialogEl.close();
+    logRenderer('info', 'automation', existing ? 'Script updated' : 'Script added', {
+      scriptId: script.id,
+      scriptName: script.name,
+      scriptCharacters: script.code.length,
     });
   } catch (error) {
     setScriptResult(`Script error: ${getErrorMessage(error)}`, true);
-    logRenderer('error', 'automation', 'Could not enable automation', errorDetails(error));
   }
-});
-
-stopScriptEl.addEventListener('click', async () => {
-  automation = readSettingsFromForm(false);
-  await window.electronAPI.saveAutomationSettings(automation);
-  setAutomationStatus(false);
-  setScriptResult('Automation stopped.');
-  logRenderer('info', 'automation', 'Automation stopped');
 });
 
 copyPromptEl.addEventListener('click', () => {
   window.electronAPI.copyText(CHATBOT_PROMPT);
-  setScriptResult('Chatbot prompt copied to the clipboard.');
+  setScriptResult('Chatbot prompt copied.');
   logRenderer('info', 'clipboard', 'Chatbot prompt copied');
 });
 
@@ -364,17 +403,69 @@ refreshLogsEl.addEventListener('click', () => void refreshDiagnosticLogs());
 copyLogsEl.addEventListener('click', async () => {
   await refreshDiagnosticLogs();
   window.electronAPI.copyText(displayedLogs);
-  setScriptResult('Diagnostic logs copied to the clipboard.');
+  setAutomationResult('Diagnostic logs copied to the clipboard.');
   logRenderer('info', 'diagnostics', 'Displayed logs copied');
 });
 
 openLogFolderEl.addEventListener('click', async () => {
   const error = await window.electronAPI.openLogFolder();
   if (error) {
-    setScriptResult(`Could not open log folder: ${error}`, true);
+    setAutomationResult(`Could not open log folder: ${error}`, true);
     logRenderer('error', 'diagnostics', 'Could not open log folder', { error });
   } else {
     logRenderer('info', 'diagnostics', 'Log folder opened');
+  }
+});
+
+scriptsEl.addEventListener('change', async (event) => {
+  const toggle = event.target as HTMLInputElement;
+  if (!toggle.matches('input[data-script-id]')) return;
+  const script = automation.scripts.find((item) => item.id === toggle.dataset.scriptId);
+  if (!script) return;
+
+  script.enabled = toggle.checked;
+  try {
+    await saveAutomationSettings();
+    renderAutomationScripts();
+    logRenderer('info', 'automation', script.enabled ? 'Script enabled' : 'Script disabled', {
+      scriptId: script.id,
+      scriptName: script.name,
+    });
+  } catch (error) {
+    script.enabled = !toggle.checked;
+    toggle.checked = script.enabled;
+    setAutomationResult(`Could not update script: ${getErrorMessage(error)}`, true);
+  }
+});
+
+scriptsEl.addEventListener('click', async (event) => {
+  const button = (event.target as HTMLElement).closest<HTMLButtonElement>('button[data-action]');
+  if (!button) return;
+  const script = automation.scripts.find((item) => item.id === button.dataset.scriptId);
+  if (!script) return;
+
+  if (button.dataset.action === 'edit') {
+    openScriptDialog(script);
+    return;
+  }
+  if (button.dataset.action !== 'delete' || !window.confirm(`Delete “${script.name}”?`)) return;
+
+  automation = {
+    ...automation,
+    scripts: automation.scripts.filter((item) => item.id !== script.id),
+  };
+  scriptRunResults.delete(script.id);
+  try {
+    await saveAutomationSettings();
+    renderAutomationScripts();
+    logRenderer('info', 'automation', 'Script deleted', {
+      scriptId: script.id,
+      scriptName: script.name,
+    });
+  } catch (error) {
+    automation = { ...automation, scripts: [...automation.scripts, script] };
+    renderAutomationScripts();
+    setAutomationResult(`Could not delete script: ${getErrorMessage(error)}`, true);
   }
 });
 
@@ -403,13 +494,71 @@ window.electronAPI?.onBackfillProgress((progress) => {
   );
 });
 
-function readSettingsFromForm(active: boolean): AutomationSettings {
-  return {
-    botToken: botTokenEl.value.trim(),
-    chatId: chatIdEl.value.trim(),
-    script: scriptEl.value,
-    active,
-  };
+async function saveAutomationSettings() {
+  await window.electronAPI.saveAutomationSettings(automation);
+  setAutomationStatus();
+}
+
+function openScriptDialog(script?: AutomationScript) {
+  editingScriptId = script?.id ?? null;
+  scriptDialogTitleEl.textContent = script ? 'Edit round script' : 'Add round script';
+  scriptNameEl.value = script?.name ?? '';
+  scriptCodeEl.value = script?.code ?? '';
+  setScriptResult('');
+  scriptDialogEl.showModal();
+  scriptNameEl.focus();
+}
+
+function renderAutomationScripts() {
+  setAutomationStatus();
+  if (automation.scripts.length === 0) {
+    const row = document.createElement('tr');
+    const cell = document.createElement('td');
+    cell.colSpan = 4;
+    cell.className = 'script-empty';
+    cell.textContent = 'No scripts yet. Add one to start automating rounds.';
+    row.append(cell);
+    scriptsEl.replaceChildren(row);
+    return;
+  }
+
+  scriptsEl.replaceChildren(...automation.scripts.map((script) => {
+    const row = document.createElement('tr');
+    const name = document.createElement('td');
+    const result = document.createElement('td');
+    const enabled = document.createElement('td');
+    const actions = document.createElement('td');
+    const toggleLabel = document.createElement('label');
+    const toggle = document.createElement('input');
+    const edit = document.createElement('button');
+    const remove = document.createElement('button');
+    const lastRun = scriptRunResults.get(script.id);
+
+    name.textContent = script.name;
+    name.className = 'script-name';
+    result.textContent = lastRun?.message ?? 'Not run yet';
+    result.className = `script-run-result${lastRun?.error ? ' error' : ''}`;
+    toggle.type = 'checkbox';
+    toggle.checked = script.enabled;
+    toggle.dataset.scriptId = script.id;
+    toggleLabel.className = 'script-toggle';
+    toggleLabel.append(toggle, document.createTextNode(script.enabled ? 'On' : 'Off'));
+    enabled.append(toggleLabel);
+    edit.type = 'button';
+    edit.className = 'secondary compact';
+    edit.textContent = 'Edit';
+    edit.dataset.action = 'edit';
+    edit.dataset.scriptId = script.id;
+    remove.type = 'button';
+    remove.className = 'secondary compact';
+    remove.textContent = 'Delete';
+    remove.dataset.action = 'delete';
+    remove.dataset.scriptId = script.id;
+    actions.className = 'script-actions';
+    actions.append(edit, remove);
+    row.append(name, result, enabled, actions);
+    return row;
+  }));
 }
 
 async function addGame(data: GameData) {
@@ -437,17 +586,18 @@ async function addGame(data: GameData) {
     roundsInMemory: games.length,
     roundsVisible: Math.min(games.length, MAX_VISIBLE_GAMES),
   });
-  if (automation.active) await runAutomation(storedGame);
+  const enabledScripts = automation.scripts.filter((script) => script.enabled);
+  await Promise.all(enabledScripts.map((script) => runAutomation(script, storedGame)));
 }
 
-async function runAutomation(round: StoredGame) {
+async function runAutomation(script: AutomationScript, round: StoredGame) {
   try {
     const execute = new AsyncFunction(
       'round',
       'recentRounds',
       'sendMessage',
       'getHistory',
-      automation.script,
+      script.code,
     );
     const sendMessage = async (text: string) => {
       if (typeof text !== 'string' || !text.trim()) {
@@ -471,14 +621,28 @@ async function runAutomation(round: StoredGame) {
       sendMessage,
       window.electronAPI.getGameHistory,
     );
-    setScriptResult(`Last run succeeded for round ${round.id}.`);
-    logRenderer('info', 'automation', 'Round script completed', { roundId: round.id });
+    scriptRunResults.set(script.id, {
+      message: `Succeeded for round ${round.id}`,
+      error: false,
+    });
+    logRenderer('info', 'automation', 'Round script completed', {
+      roundId: round.id,
+      scriptId: script.id,
+      scriptName: script.name,
+    });
   } catch (error) {
-    setScriptResult(`Round ${round.id}: ${getErrorMessage(error)}`, true);
+    scriptRunResults.set(script.id, {
+      message: `Round ${round.id}: ${getErrorMessage(error)}`,
+      error: true,
+    });
     logRenderer('error', 'automation', 'Round script failed', {
       roundId: round.id,
+      scriptId: script.id,
+      scriptName: script.name,
       error: errorDetails(error),
     });
+  } finally {
+    renderAutomationScripts();
   }
 }
 

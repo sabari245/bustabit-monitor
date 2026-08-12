@@ -139,7 +139,10 @@ tbody tr:hover {
 }
 
 .section-heading,
-.automation-actions {
+.script-table-heading,
+.credential-actions,
+.dialog-heading,
+.dialog-actions {
   display: flex;
   align-items: center;
   gap: 12px;
@@ -151,17 +154,24 @@ tbody tr:hover {
 }
 
 h2,
+h3,
 .section-heading p,
+.script-table-heading p,
+.dialog-heading p,
 .script-help,
+#automation-result,
 #script-result {
   margin: 0;
 }
 
-h2 {
+h2,
+h3 {
   font-size: 18px;
 }
 
 .section-heading p,
+.script-table-heading p,
+.dialog-heading p,
 .script-help {
   margin-top: 5px;
   color: #a1a1aa;
@@ -181,10 +191,33 @@ h2 {
   color: #bbf7d0;
 }
 
+.credential-settings {
+  border: 1px solid #3f3f46;
+  border-radius: 8px;
+  background: #18181b;
+}
+
+.credential-settings summary {
+  padding: 12px 14px;
+  cursor: pointer;
+  color: #d4d4d8;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.credential-settings[open] summary {
+  border-bottom: 1px solid #3f3f46;
+}
+
 .credentials {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 14px;
+  padding: 14px;
+}
+
+.credential-actions {
+  padding: 0 14px 14px;
 }
 
 label {
@@ -226,10 +259,6 @@ textarea:focus {
   box-shadow: 0 0 0 2px rgb(113 113 122 / 25%);
 }
 
-.script-field {
-  margin-top: 14px;
-}
-
 .script-label-row {
   display: flex;
   align-items: center;
@@ -242,8 +271,50 @@ textarea:focus {
   color: #d4d4d8;
 }
 
-.automation-actions {
-  margin-top: 16px;
+.script-table-heading {
+  justify-content: space-between;
+  margin: 18px 0 10px;
+}
+
+.script-table-heading h3 {
+  font-size: 15px;
+}
+
+.script-table-wrap {
+  overflow: hidden;
+  border: 1px solid #3f3f46;
+  border-radius: 8px;
+}
+
+.script-table th:last-child,
+.script-table td:last-child {
+  text-align: right;
+}
+
+.script-empty {
+  height: 88px;
+  color: #71717a;
+  text-align: center;
+}
+
+.script-name {
+  color: #f4f4f5;
+  font-weight: 700;
+}
+
+.script-run-result {
+  max-width: 420px;
+  color: #a1a1aa;
+}
+
+.script-run-result.error {
+  color: #fb7185;
+}
+
+.script-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
 }
 
 button {
@@ -281,13 +352,64 @@ button.compact {
   display: none;
 }
 
+#automation-result,
 #script-result {
   color: #a1a1aa;
   font-size: 13px;
 }
 
+#automation-result.error,
 #script-result.error {
   color: #fb7185;
+}
+
+.script-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  font-weight: 400;
+}
+
+.script-toggle input {
+  width: 34px;
+  height: 18px;
+  margin: 0;
+  accent-color: #4ade80;
+  cursor: pointer;
+}
+
+dialog {
+  width: min(720px, calc(100vw - 32px));
+  padding: 0;
+  border: 1px solid #52525b;
+  border-radius: 10px;
+  background: #202023;
+  color: #f4f4f5;
+  box-shadow: 0 24px 80px rgb(0 0 0 / 55%);
+}
+
+dialog::backdrop {
+  background: rgb(0 0 0 / 70%);
+}
+
+#script-form {
+  display: grid;
+  gap: 14px;
+  padding: 20px;
+}
+
+.dialog-heading {
+  justify-content: space-between;
+  align-items: flex-start;
+}
+
+.dialog-actions {
+  justify-content: space-between;
+}
+
+#script-code {
+  min-height: 300px;
 }
 
 .webview-panel .section-heading {
@@ -344,7 +466,9 @@ button.compact {
   header,
   .header-actions,
   .section-heading,
-  .automation-actions,
+  .script-table-heading,
+  .credential-actions,
+  .dialog-actions,
   .diagnostic-actions {
     align-items: flex-start;
     flex-direction: column;

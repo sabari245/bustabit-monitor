@@ -13,6 +13,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import started from 'electron-squirrel-startup';
 import type {
+  AutomationScript,
   AutomationSettings,
   GameData,
   StoredGame,
@@ -35,6 +36,43 @@ import {
 nativeTheme.themeSource = 'dark';
 
 const MAX_RECENT_GAMES = 100;
+const DEFAULT_AUTOMATION_SCRIPTS: AutomationScript[] = [
+  {
+    id: 'default-10x-alert',
+    name: '10x multiplier alert',
+    code: [
+      'if (round.bust >= 10) {',
+      '  await sendMessage(`🚨 Round ${round.id} reached ${round.bust.toFixed(2)}x`);',
+      '}',
+    ].join('\n'),
+    enabled: false,
+  },
+  {
+    id: 'default-low-streak-alert',
+    name: 'Five rounds below 2x',
+    code: [
+      'const window = recentRounds.slice(0, 5);',
+      'if (window.length === 5 && window.every((item) => item.bust < 2)) {',
+      '  await sendMessage(`Five consecutive rounds below 2x. Latest: ${round.bust.toFixed(2)}x`);',
+      '}',
+    ].join('\n'),
+    enabled: false,
+  },
+  {
+    id: 'default-average-spike-alert',
+    name: '3x average spike',
+    code: [
+      'const previous = recentRounds.slice(1, 21);',
+      'if (previous.length === 20) {',
+      '  const average = previous.reduce((sum, item) => sum + item.bust, 0) / previous.length;',
+      '  if (round.bust >= average * 3) {',
+      '    await sendMessage(`Round ${round.id}: ${round.bust.toFixed(2)}x versus previous average ${average.toFixed(2)}x`);',
+      '  }',
+      '}',
+    ].join('\n'),
+    enabled: false,
+  },
+];
 let recentGames: StoredGame[] = [];
 let dataDirectory = '';
 let historyPath = '';
@@ -271,12 +309,31 @@ function appendFileInReverse(
 }
 
 function getAutomationSettings(): AutomationSettings {
-  const settings = readJson<Partial<AutomationSettings>>(settingsPath, {});
+  const settings = readJson<Partial<AutomationSettings> & {
+    script?: unknown;
+    active?: unknown;
+  }>(settingsPath, {});
+  const scripts = Array.isArray(settings.scripts)
+    ? settings.scripts.filter(
+        (script) =>
+          script &&
+          typeof script.id === 'string' &&
+          typeof script.name === 'string' &&
+          typeof script.code === 'string' &&
+          typeof script.enabled === 'boolean',
+      )
+    : typeof settings.script === 'string' && settings.script
+      ? [{
+          id: 'migrated-script',
+          name: 'My automation',
+          code: settings.script,
+          enabled: settings.active === true,
+        }]
+      : DEFAULT_AUTOMATION_SCRIPTS.map((script) => ({ ...script }));
   return {
     botToken: typeof settings.botToken === 'string' ? settings.botToken : '',
     chatId: typeof settings.chatId === 'string' ? settings.chatId : '',
-    script: typeof settings.script === 'string' ? settings.script : '',
-    active: settings.active === true,
+    scripts,
   };
 }
 
@@ -390,8 +447,8 @@ function registerIpcHandlers() {
       try {
         writeJson(settingsPath, settings);
         log('info', 'automation', 'Automation settings saved', {
-          active: settings.active,
-          scriptCharacters: settings.script.length,
+          scriptCount: settings.scripts.length,
+          enabledScriptCount: settings.scripts.filter((script) => script.enabled).length,
           hasBotToken: Boolean(settings.botToken),
           hasChatId: Boolean(settings.chatId),
         });
