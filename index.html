@@ -10,30 +10,33 @@
     <title>Bustabit Monitor</title>
   </head>
   <body>
-    <div id="app">
-      <aside id="monitor-panel">
-        <h1>Bustabit Monitor</h1>
-        <dl class="game-stats">
-          <div class="stat">
-            <dt>Game ID</dt>
-            <dd id="game-id">—</dd>
-          </div>
-          <div class="stat">
-            <dt>Hash</dt>
-            <dd id="game-hash" class="mono">—</dd>
-          </div>
-          <div class="stat">
-            <dt>Bust</dt>
-            <dd id="game-bust">—</dd>
-          </div>
-        </dl>
-        <p id="status" class="status">Connecting…</p>
-      </aside>
-      <webview
-        id="game-webview"
-        webpreferences="contextIsolation=yes"
-      ></webview>
-    </div>
+    <main id="app">
+      <header>
+        <div>
+          <h1>Bustabit Monitor</h1>
+          <p>Completed games update in real time.</p>
+        </div>
+        <p id="status" class="status">Connecting...</p>
+      </header>
+      <section class="table-panel">
+        <table>
+          <thead>
+            <tr>
+              <th>Game ID</th>
+              <th>Hash</th>
+              <th>Bust</th>
+              <th>Received</th>
+            </tr>
+          </thead>
+          <tbody id="games">
+            <tr id="empty-row">
+              <td colspan="4">Waiting for the next completed game...</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+    </main>
+    <webview id="game-webview" webpreferences="contextIsolation=yes"></webview>
     <script type="module" src="/src/renderer.ts"></script>
   </body>
 </html>
