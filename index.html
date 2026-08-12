@@ -5,7 +5,7 @@
     <meta name="color-scheme" content="dark" />
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' https:; img-src 'self' data: https:; frame-src https:; webview-src https:;"
+      content="default-src 'self'; script-src 'self' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; connect-src 'self' https:; img-src 'self' data: https:; frame-src https:; webview-src https:;"
     />
     <title>Bustabit Monitor</title>
   </head>
@@ -14,9 +14,19 @@
       <header>
         <div>
           <h1>Bustabit Monitor</h1>
-          <p>Completed games update in real time.</p>
+          <p>Completed rounds are saved locally and update in real time.</p>
         </div>
-        <p id="status" class="status">Connecting...</p>
+        <div class="header-actions">
+          <p id="status" class="status">Connecting...</p>
+          <button
+            id="toggle-developer-mode"
+            class="secondary compact"
+            type="button"
+            aria-pressed="false"
+          >
+            Enable developer mode
+          </button>
+        </div>
       </header>
       <section class="table-panel">
         <table>
@@ -35,8 +45,78 @@
           </tbody>
         </table>
       </section>
+      <section class="automation-panel">
+        <div class="section-heading">
+          <div>
+            <h2>Telegram automation</h2>
+            <p>Run custom logic whenever a new completed round arrives.</p>
+          </div>
+          <span id="automation-status" class="automation-status">Stopped</span>
+        </div>
+        <div class="automation-editor">
+          <div class="credentials">
+            <label>
+              Telegram bot token
+              <input id="bot-token" type="password" autocomplete="off" placeholder="123456789:AA..." />
+            </label>
+            <label>
+              Telegram chat/user ID
+              <input id="chat-id" type="text" autocomplete="off" placeholder="123456789" />
+            </label>
+          </div>
+          <div class="script-field">
+            <div class="script-label-row">
+              <label for="script">Round script</label>
+              <button id="copy-prompt" class="secondary compact" type="button">
+                Copy chatbot prompt
+              </button>
+            </div>
+            <textarea id="script" spellcheck="false" placeholder="if (round.bust >= 10) {&#10;  await sendMessage(`High round: ${round.bust}x`);&#10;}"></textarea>
+          </div>
+          <p class="script-help">
+            Available: <code>round</code>, <code>recentRounds</code> (newest 100), and
+            <code>await sendMessage(text)</code>. Load older rounds in pages with
+            <code>await getHistory(offset, limit)</code> (newest first, up to 1,000 at a time).
+            Missing classic rounds are reconstructed and stored back to game 12,279,451.
+          </p>
+          <div class="automation-actions">
+            <button id="run-script" type="button">Run on new rounds</button>
+            <button id="stop-script" class="secondary" type="button">Stop</button>
+            <p id="script-result" aria-live="polite"></p>
+          </div>
+        </div>
+      </section>
+      <section class="webview-panel">
+        <div class="section-heading">
+          <div>
+            <h2>Bustabit WebView</h2>
+            <p>This is the live page used by the round monitor.</p>
+          </div>
+        </div>
+        <div class="webview-frame">
+          <webview
+            id="game-webview"
+            webpreferences="contextIsolation=yes"
+          ></webview>
+        </div>
+      </section>
+      <section class="diagnostics-panel developer-only" hidden>
+        <div class="section-heading diagnostics-heading">
+          <div>
+            <h2>Diagnostics</h2>
+            <p id="log-path">Loading log location...</p>
+          </div>
+          <div class="diagnostic-actions">
+            <button id="refresh-logs" class="secondary compact" type="button">Refresh</button>
+            <button id="copy-logs" class="secondary compact" type="button">Copy logs</button>
+            <button id="open-log-folder" class="secondary compact" type="button">
+              Open log folder
+            </button>
+          </div>
+        </div>
+        <pre id="diagnostic-logs" aria-live="polite">Loading diagnostics...</pre>
+      </section>
     </main>
-    <webview id="game-webview" webpreferences="contextIsolation=yes"></webview>
     <script type="module" src="/src/renderer.ts"></script>
   </body>
 </html>

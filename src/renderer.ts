@@ -1,73 +1,519 @@
 import './index.css';
 import { HASH_POLL_SCRIPT } from './injected/hash-poll';
-import type { GameData } from './types';
+import type { AutomationSettings, GameData, LogLevel, StoredGame } from './types';
 
 const BUSTABIT_URL = 'https://bustabit.com/play';
-const MAX_GAMES = 100;
+const MAX_GAMES_IN_MEMORY = 100;
+const MAX_VISIBLE_GAMES = 10;
+const DEVELOPER_MODE_KEY = 'bustabit-monitor:developer-mode';
+const AsyncFunction = Object.getPrototypeOf(async () => undefined).constructor as new (
+  ...args: string[]
+) => (
+  round: StoredGame,
+  recentRounds: StoredGame[],
+  sendMessage: (text: string) => Promise<void>,
+  getHistory: (offset?: number, limit?: number) => Promise<StoredGame[]>,
+) => Promise<unknown>;
 
 const webview = document.getElementById('game-webview') as Electron.WebviewTag;
 const gamesEl = document.getElementById('games') as HTMLTableSectionElement;
 const statusEl = document.getElementById('status') as HTMLParagraphElement;
-const games: Array<GameData & { receivedAt: Date }> = [];
+const developerModeEl = document.getElementById(
+  'toggle-developer-mode',
+) as HTMLButtonElement;
+const developerOnlyEls = document.querySelectorAll<HTMLElement>('.developer-only');
+const botTokenEl = document.getElementById('bot-token') as HTMLInputElement;
+const chatIdEl = document.getElementById('chat-id') as HTMLInputElement;
+const scriptEl = document.getElementById('script') as HTMLTextAreaElement;
+const runScriptEl = document.getElementById('run-script') as HTMLButtonElement;
+const stopScriptEl = document.getElementById('stop-script') as HTMLButtonElement;
+const copyPromptEl = document.getElementById('copy-prompt') as HTMLButtonElement;
+const refreshLogsEl = document.getElementById('refresh-logs') as HTMLButtonElement;
+const copyLogsEl = document.getElementById('copy-logs') as HTMLButtonElement;
+const openLogFolderEl = document.getElementById('open-log-folder') as HTMLButtonElement;
+const logPathEl = document.getElementById('log-path') as HTMLParagraphElement;
+const diagnosticLogsEl = document.getElementById('diagnostic-logs') as HTMLPreElement;
+const automationStatusEl = document.getElementById(
+  'automation-status',
+) as HTMLSpanElement;
+const scriptResultEl = document.getElementById('script-result') as HTMLParagraphElement;
+const games: StoredGame[] = [];
+let automation: AutomationSettings = {
+  botToken: '',
+  chatId: '',
+  script: '',
+  active: false,
+};
+let roundQueue = Promise.resolve();
+let displayedLogs = '';
+let developerMode = localStorage.getItem(DEVELOPER_MODE_KEY) === 'true';
+
+const CHATBOT_PROMPT = `I need you to write a JavaScript automation script for a desktop application called Bustabit Monitor.
+
+Context
+The application watches completed Bustabit game rounds. I will paste your JavaScript into the application's "Round script" editor and click "Run on new rounds". The complete script executes once after every newly completed round has been saved. It should decide whether a Telegram message needs to be sent. Do not write an entire application, Telegram client, HTML page, Node.js program, or installation instructions. Return only code that can be pasted directly into the script editor, unless I explicitly ask for an explanation.
+
+Runtime API
+The script body runs inside an async JavaScript function, so top-level await is supported. These four values are already available as variables. Do not import, declare, or mock them:
+
+1. round
+The newly completed round:
+{
+  id: number,
+  hash: string,
+  bust: number,
+  receivedAt: string, // ISO timestamp when the app stored/reconstructed it
+  reconstructed?: boolean // true when recovered from the hash chain
+}
+
+2. recentRounds
+An array containing at most the newest 100 rounds, ordered newest first. recentRounds[0] is the current round. Every item has the same fields as round. Do not mutate this array.
+
+3. sendMessage(text)
+An async function that sends text to the Telegram bot and chat configured in the application. Call it with non-empty text and await it:
+await sendMessage("Alert text");
+It throws an error if Telegram rejects the message or cannot be reached. Only call it when the requested condition is met. Telegram messages should be concise and useful.
+
+4. getHistory(offset = 0, limit = 100)
+An async function that loads completed rounds from persistent disk history, newest first. Missing classic-era rounds are reconstructed from the verified hash chain back to game 12,279,451. It returns a Promise of round objects. offset skips that many newest records, and limit can be from 1 to 1000. Page through history when more than 1000 records are needed rather than requesting or retaining an unbounded amount of data. The current round is already present at offset 0.
+
+Rules and constraints
+- Write ordinary modern JavaScript, not TypeScript. Do not include Markdown code fences in the final answer.
+- The script is invoked again independently for every new round. Variables created by one invocation should not be assumed to exist on the next invocation.
+- Prefer recentRounds when the strategy needs no more than 100 rounds. Use getHistory only when older data is genuinely required.
+- Prevent false alerts when there is insufficient history. Check array lengths before calculating statistics or streaks.
+- Avoid infinite loops, timers, polling, DOM access, filesystem access, environment variables, npm packages, require, imports, and direct Telegram HTTP requests.
+- Do not expose the bot token or chat ID in messages or code. Use sendMessage.
+- Avoid duplicate alerts within one invocation. Usually make at most one sendMessage call per completed round unless I explicitly request otherwise.
+- Handle numeric comparisons carefully. The bust value is already a multiplier such as 1.42 or 12.5.
+- If the requested strategy is ambiguous, ask me focused questions before producing code. Otherwise, produce a complete paste-ready script.
+
+Examples
+
+Alert when the current multiplier reaches 10x:
+if (round.bust >= 10) {
+  await sendMessage(\`🚨 Round \${round.id} reached \${round.bust.toFixed(2)}x\`);
+}
+
+Alert after five consecutive rounds below 2x:
+const window = recentRounds.slice(0, 5);
+if (window.length === 5 && window.every((item) => item.bust < 2)) {
+  await sendMessage(
+    \`Five consecutive rounds below 2x. Latest: \${round.bust.toFixed(2)}x\`,
+  );
+}
+
+Alert when the current round is at least three times the average of the previous 20 rounds:
+const previous = recentRounds.slice(1, 21);
+if (previous.length === 20) {
+  const average = previous.reduce((sum, item) => sum + item.bust, 0) / previous.length;
+  if (round.bust >= average * 3) {
+    await sendMessage(
+      \`Round \${round.id}: \${round.bust.toFixed(2)}x versus previous average \${average.toFixed(2)}x\`,
+    );
+  }
+}
+
+Use older persisted history in bounded pages:
+const latestThousand = await getHistory(0, 1000);
+if (latestThousand.length >= 100) {
+  const highRounds = latestThousand.filter((item) => item.bust >= 10).length;
+  const rate = (highRounds / latestThousand.length) * 100;
+  if (round.bust >= 10) {
+    await sendMessage(
+      \`10x+ round: \${round.bust.toFixed(2)}x. Recent 10x+ rate: \${rate.toFixed(1)}%\`,
+    );
+  }
+}
+
+My requested strategy
+Describe the strategy here, including thresholds, lookback size, message wording, and any cooldown or edge-case behavior. Then generate the paste-ready script.`;
 
 function setStatus(message: string) {
   statusEl.textContent = message;
 }
 
-function getWebviewPreloadPath(): string | null {
-  return new URLSearchParams(window.location.search).get('webviewPreload') ??
-    window.electronAPI?.webviewPreload ??
-    null;
+function setScriptResult(message: string, error = false) {
+  scriptResultEl.textContent = message;
+  scriptResultEl.classList.toggle('error', error);
 }
 
+function setAutomationStatus(active: boolean) {
+  automationStatusEl.textContent = active ? 'Running' : 'Stopped';
+  automationStatusEl.classList.toggle('running', active);
+}
+
+function setDeveloperMode(enabled: boolean) {
+  developerMode = enabled;
+  localStorage.setItem(DEVELOPER_MODE_KEY, String(enabled));
+  developerModeEl.textContent = enabled ? 'Exit developer mode' : 'Enable developer mode';
+  developerModeEl.setAttribute('aria-pressed', String(enabled));
+  developerOnlyEls.forEach((element) => {
+    element.hidden = !enabled;
+  });
+  if (enabled) void refreshDiagnosticLogs();
+}
+
+function logRenderer(
+  level: LogLevel,
+  scope: string,
+  message: string,
+  details?: unknown,
+) {
+  void window.electronAPI?.log(level, scope, message, details).catch(() => undefined);
+}
+
+function errorDetails(error: unknown) {
+  return error instanceof Error
+    ? { name: error.name, message: error.message, stack: error.stack }
+    : { value: String(error) };
+}
+
+function getWebviewPreloadPath(): string | null {
+  return new URLSearchParams(window.location.search).get('webviewPreload');
+}
+
+async function initialize() {
+  setDeveloperMode(developerMode);
+  logRenderer('info', 'app', 'Renderer initialization started');
+  if (!window.electronAPI) {
+    throw new Error('Electron preload bridge is unavailable. Fully restart the application.');
+  }
+  const [storedGames, settings] = await Promise.all([
+    window.electronAPI.getRecentGames(),
+    window.electronAPI.getAutomationSettings(),
+  ]);
+  games.push(...storedGames.slice(0, MAX_GAMES_IN_MEMORY));
+  automation = settings;
+  botTokenEl.value = settings.botToken;
+  chatIdEl.value = settings.chatId;
+  scriptEl.value = settings.script;
+  setAutomationStatus(settings.active);
+  renderGames();
+  logRenderer('info', 'app', 'Renderer initialization completed', {
+    recentRoundsLoaded: games.length,
+    automationActive: settings.active,
+  });
+}
+
+const initialization = initialize().catch((error) => {
+  const message = getErrorMessage(error);
+  setStatus(`Could not load local app data: ${message}`);
+  logRenderer('error', 'app', 'Renderer initialization failed', errorDetails(error));
+});
 const webviewPreloadPath = getWebviewPreloadPath();
 
 if (!webviewPreloadPath) {
   setStatus('Missing WebView preload path. Restart the application.');
-  throw new Error('webview preload path is unavailable');
+  logRenderer('error', 'webview', 'WebView preload path is unavailable');
+} else {
+  webview.preload = webviewPreloadPath;
+  webview.src = BUSTABIT_URL;
+  setStatus('Connecting...');
+  logRenderer('info', 'webview', 'WebView configured', {
+    url: BUSTABIT_URL,
+    hasPreloadPath: true,
+  });
 }
 
-webview.preload = webviewPreloadPath;
-webview.src = BUSTABIT_URL;
-setStatus('Connecting...');
-
 webview.addEventListener('dom-ready', () => {
+  logRenderer('info', 'webview', 'WebView DOM is ready');
   webview
     .executeJavaScript(HASH_POLL_SCRIPT)
-    .then(() => setStatus('Connected. Waiting for the next completed game...'))
-    .catch(() => setStatus('Failed to start the game monitor.'));
+    .then(() => {
+      setStatus('Connected. Waiting for the next completed round...');
+      logRenderer('info', 'webview', 'Round monitor script installed');
+    })
+    .catch((error) => {
+      const message = getErrorMessage(error);
+      setStatus(`Failed to start the game monitor: ${message}`);
+      logRenderer('error', 'webview', 'Could not install round monitor script', errorDetails(error));
+    });
 });
+
+webview.addEventListener('did-start-loading', () =>
+  logRenderer('debug', 'webview', 'WebView started loading'),
+);
+
+webview.addEventListener('did-stop-loading', () =>
+  logRenderer('info', 'webview', 'WebView stopped loading', { url: webview.getURL() }),
+);
+
+webview.addEventListener('did-navigate', (event) =>
+  logRenderer('info', 'webview', 'WebView navigated', { url: event.url }),
+);
+
+webview.addEventListener('console-message', (event) =>
+  logRenderer(event.level >= 3 ? 'error' : event.level === 2 ? 'warn' : 'debug', 'webview-console', event.message, {
+    line: event.line,
+    sourceId: event.sourceId,
+  }),
+);
+
+webview.addEventListener('render-process-gone', (event) =>
+  logRenderer('error', 'webview', 'WebView renderer process exited', { reason: event.reason }),
+);
 
 webview.addEventListener('did-fail-load', (event) => {
   if (event.isMainFrame) {
     setStatus(`Load failed (${event.errorCode}: ${event.errorDescription}).`);
+    logRenderer('error', 'webview', 'WebView failed to load', {
+      errorCode: event.errorCode,
+      errorDescription: event.errorDescription,
+      validatedURL: event.validatedURL,
+    });
   }
 });
 
 webview.addEventListener('ipc-message', (event) => {
+  if (event.channel === 'btrack-log') {
+    try {
+      const entry = JSON.parse(event.args[0] as string) as {
+        level?: LogLevel;
+        message?: string;
+        details?: unknown;
+      };
+      logRenderer(
+        entry.level ?? 'info',
+        'webview-monitor',
+        entry.message ?? 'WebView monitor event',
+        entry.details,
+      );
+    } catch (error) {
+      logRenderer('warn', 'webview-monitor', 'Invalid monitor log payload', errorDetails(error));
+    }
+    return;
+  }
   if (event.channel !== 'btrack-game') return;
 
   try {
-    addGame(JSON.parse(event.args[0] as string) as GameData);
-  } catch {
-    setStatus('Received invalid game data.');
+    const game = JSON.parse(event.args[0] as string) as GameData;
+    logRenderer('debug', 'games', 'Round received from WebView', {
+      id: game.id,
+      bust: game.bust,
+      hash: game.hash?.slice(0, 12),
+    });
+    roundQueue = roundQueue
+      .then(async () => {
+        await initialization;
+        await addGame(game);
+      })
+      .catch((error) => {
+        const message = getErrorMessage(error);
+        setStatus(`Could not save the latest round: ${message}`);
+        logRenderer('error', 'games', 'Round processing failed', {
+          id: game.id,
+          error: errorDetails(error),
+        });
+      });
+  } catch (error) {
+    setStatus(`Received invalid game data: ${getErrorMessage(error)}`);
+    logRenderer('error', 'games', 'Invalid WebView round payload', errorDetails(error));
   }
 });
 
-function addGame(data: GameData) {
-  if (!data.hash || data.id == null || data.bust == null) return;
+runScriptEl.addEventListener('click', async () => {
+  const settings = readSettingsFromForm(true);
+  if (!settings.botToken || !settings.chatId) {
+    setScriptResult('Enter both the bot token and chat/user ID.', true);
+    return;
+  }
 
-  const existing = games.findIndex((game) => game.hash === data.hash);
-  if (existing >= 0) games.splice(existing, 1);
-  games.unshift({ ...data, receivedAt: new Date() });
-  games.splice(MAX_GAMES);
+  try {
+    new AsyncFunction(
+      'round',
+      'recentRounds',
+      'sendMessage',
+      'getHistory',
+      settings.script,
+    );
+    await window.electronAPI.saveAutomationSettings(settings);
+    automation = settings;
+    setAutomationStatus(true);
+    setScriptResult('Saved. The script will run on each new round.');
+    logRenderer('info', 'automation', 'Automation enabled', {
+      scriptCharacters: settings.script.length,
+    });
+  } catch (error) {
+    setScriptResult(`Script error: ${getErrorMessage(error)}`, true);
+    logRenderer('error', 'automation', 'Could not enable automation', errorDetails(error));
+  }
+});
+
+stopScriptEl.addEventListener('click', async () => {
+  automation = readSettingsFromForm(false);
+  await window.electronAPI.saveAutomationSettings(automation);
+  setAutomationStatus(false);
+  setScriptResult('Automation stopped.');
+  logRenderer('info', 'automation', 'Automation stopped');
+});
+
+copyPromptEl.addEventListener('click', () => {
+  window.electronAPI.copyText(CHATBOT_PROMPT);
+  setScriptResult('Chatbot prompt copied to the clipboard.');
+  logRenderer('info', 'clipboard', 'Chatbot prompt copied');
+});
+
+developerModeEl.addEventListener('click', () => {
+  setDeveloperMode(!developerMode);
+  logRenderer('info', 'developer-mode', developerMode ? 'Enabled' : 'Disabled');
+});
+
+refreshLogsEl.addEventListener('click', () => void refreshDiagnosticLogs());
+
+copyLogsEl.addEventListener('click', async () => {
+  await refreshDiagnosticLogs();
+  window.electronAPI.copyText(displayedLogs);
+  setScriptResult('Diagnostic logs copied to the clipboard.');
+  logRenderer('info', 'diagnostics', 'Displayed logs copied');
+});
+
+openLogFolderEl.addEventListener('click', async () => {
+  const error = await window.electronAPI.openLogFolder();
+  if (error) {
+    setScriptResult(`Could not open log folder: ${error}`, true);
+    logRenderer('error', 'diagnostics', 'Could not open log folder', { error });
+  } else {
+    logRenderer('info', 'diagnostics', 'Log folder opened');
+  }
+});
+
+window.addEventListener('error', (event) =>
+  logRenderer('error', 'window', 'Unhandled renderer error', {
+    message: event.message,
+    filename: event.filename,
+    line: event.lineno,
+    column: event.colno,
+    error: errorDetails(event.error),
+  }),
+);
+
+window.addEventListener('unhandledrejection', (event) =>
+  logRenderer('error', 'window', 'Unhandled renderer rejection', errorDetails(event.reason)),
+);
+
+window.electronAPI?.onBackfillProgress((progress) => {
+  const percent = progress.total === 0
+    ? 100
+    : Math.floor((progress.processed / progress.total) * 100);
+  setStatus(
+    progress.processed === progress.total
+      ? `History backfill complete. ${progress.total.toLocaleString()} rounds stored.`
+      : `Backfilling history: ${percent}% (${progress.processed.toLocaleString()} / ${progress.total.toLocaleString()})`,
+  );
+});
+
+function readSettingsFromForm(active: boolean): AutomationSettings {
+  return {
+    botToken: botTokenEl.value.trim(),
+    chatId: chatIdEl.value.trim(),
+    script: scriptEl.value,
+    active,
+  };
+}
+
+async function addGame(data: GameData) {
+  if (!data.hash || data.id == null || data.bust == null) {
+    logRenderer('warn', 'games', 'Incomplete round ignored', {
+      hasHash: Boolean(data.hash),
+      id: data.id,
+      bust: data.bust,
+    });
+    return;
+  }
+
+  const storedGame = await window.electronAPI.storeGame(data);
+  if (!storedGame) {
+    logRenderer('debug', 'games', 'Round was rejected or already stored', { id: data.id });
+    return;
+  }
+
+  const storedGames = await window.electronAPI.getRecentGames();
+  games.splice(0, games.length, ...storedGames.slice(0, MAX_GAMES_IN_MEMORY));
   renderGames();
-  setStatus(`Live. ${games.length} game${games.length === 1 ? '' : 's'} captured.`);
+  setStatus(`Live. Keeping ${games.length} recent round${games.length === 1 ? '' : 's'} in memory.`);
+  logRenderer('info', 'games', 'Round added to renderer memory', {
+    id: storedGame.id,
+    roundsInMemory: games.length,
+    roundsVisible: Math.min(games.length, MAX_VISIBLE_GAMES),
+  });
+  if (automation.active) await runAutomation(storedGame);
+}
+
+async function runAutomation(round: StoredGame) {
+  try {
+    const execute = new AsyncFunction(
+      'round',
+      'recentRounds',
+      'sendMessage',
+      'getHistory',
+      automation.script,
+    );
+    const sendMessage = async (text: string) => {
+      if (typeof text !== 'string' || !text.trim()) {
+        throw new Error('sendMessage requires non-empty text');
+      }
+
+      const result = await window.electronAPI.sendTelegramMessage(
+        automation.botToken,
+        automation.chatId,
+        text,
+      );
+      if (!result.ok) throw new Error(result.error);
+      logRenderer('info', 'automation', 'Script sent a Telegram message', {
+        roundId: round.id,
+        messageCharacters: text.length,
+      });
+    };
+    await execute(
+      round,
+      games.map((game) => ({ ...game })),
+      sendMessage,
+      window.electronAPI.getGameHistory,
+    );
+    setScriptResult(`Last run succeeded for round ${round.id}.`);
+    logRenderer('info', 'automation', 'Round script completed', { roundId: round.id });
+  } catch (error) {
+    setScriptResult(`Round ${round.id}: ${getErrorMessage(error)}`, true);
+    logRenderer('error', 'automation', 'Round script failed', {
+      roundId: round.id,
+      error: errorDetails(error),
+    });
+  }
+}
+
+async function refreshDiagnosticLogs() {
+  try {
+    const logs = await window.electronAPI.getDiagnosticLogs();
+    displayedLogs = logs.content;
+    logPathEl.textContent = logs.path;
+    logPathEl.title = logs.path;
+    diagnosticLogsEl.textContent = logs.content || 'No diagnostics have been written yet.';
+    diagnosticLogsEl.scrollTop = diagnosticLogsEl.scrollHeight;
+  } catch (error) {
+    diagnosticLogsEl.textContent = `Could not load diagnostics: ${getErrorMessage(error)}`;
+  }
+}
+
+function getErrorMessage(error: unknown) {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function renderGames() {
+  const visibleGames = games.slice(0, MAX_VISIBLE_GAMES);
+  if (visibleGames.length === 0) {
+    const row = document.createElement('tr');
+    const cell = document.createElement('td');
+    row.id = 'empty-row';
+    cell.colSpan = 4;
+    cell.textContent = 'Waiting for the next completed round...';
+    row.append(cell);
+    gamesEl.replaceChildren(row);
+    return;
+  }
+
   gamesEl.replaceChildren(
-    ...games.map((game) => {
+    ...visibleGames.map((game) => {
       const row = document.createElement('tr');
       const id = document.createElement('td');
       const hash = document.createElement('td');
@@ -78,8 +524,8 @@ function renderGames() {
       hash.textContent = game.hash;
       hash.className = 'hash';
       bust.textContent = `${game.bust.toFixed(2)}x`;
-      bust.className = game.bust >= 2 ? 'bust high' : 'bust low';
-      received.textContent = game.receivedAt.toLocaleTimeString();
+      bust.className = `bust ${game.bust >= 2 ? 'high' : 'low'}`;
+      received.textContent = new Date(game.receivedAt).toLocaleTimeString();
       row.append(id, hash, bust, received);
       return row;
     }),
