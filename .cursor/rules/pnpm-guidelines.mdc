@@ -1,0 +1,36 @@
+---
+description: Use pnpm for every package and script command in this project
+alwaysApply: true
+---
+
+# pnpm guidelines
+
+Use pnpm for all package management and script execution. Do not use npm, yarn, bun, npx, or node for install, run, or tooling.
+
+```bash
+# ✅
+pnpm install
+pnpm add <pkg>
+pnpm add -D <pkg>
+pnpm remove <pkg>
+pnpm run <script>
+pnpm exec <cli>
+pnpm dlx <cli>
+pnpm test
+
+# ❌
+npm install / yarn install / bun install
+npx ...
+node ...
+```
+
+Prefer `pnpm dlx` over `npx` for one-off CLIs (including shadcn). Prefer `pnpm run` for package scripts.
+
+## Electron Forge compatibility
+
+This project uses Electron Forge, which requires specific pnpm settings:
+
+- `nodeLinker: hoisted` in `pnpm-workspace.yaml` (and `node-linker=hoisted` in `.npmrc`)
+- `blockExoticSubdeps: false` in `pnpm-workspace.yaml` (Forge pulls `@electron/node-gyp` from git)
+
+Do not change these without verifying Forge still packages correctly.

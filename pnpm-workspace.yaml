@@ -1,0 +1,15 @@
+allowBuilds:
+  electron: true
+  electron-winstaller: true
+  esbuild: true
+
+# Electron Forge requires a flat node_modules layout.
+nodeLinker: hoisted
+
+# Electron Forge pulls @electron/node-gyp from a git repo transitively.
+blockExoticSubdeps: false
+
+onlyBuiltDependencies:
+  - electron
+  - electron-winstaller
+  - esbuild

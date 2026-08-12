@@ -1,0 +1,39 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="color-scheme" content="dark" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' https:; img-src 'self' data: https:; frame-src https:; webview-src https:;"
+    />
+    <title>Bustabit Monitor</title>
+  </head>
+  <body>
+    <div id="app">
+      <aside id="monitor-panel">
+        <h1>Bustabit Monitor</h1>
+        <dl class="game-stats">
+          <div class="stat">
+            <dt>Game ID</dt>
+            <dd id="game-id">—</dd>
+          </div>
+          <div class="stat">
+            <dt>Hash</dt>
+            <dd id="game-hash" class="mono">—</dd>
+          </div>
+          <div class="stat">
+            <dt>Bust</dt>
+            <dd id="game-bust">—</dd>
+          </div>
+        </dl>
+        <p id="status" class="status">Connecting…</p>
+      </aside>
+      <webview
+        id="game-webview"
+        webpreferences="contextIsolation=yes"
+      ></webview>
+    </div>
+    <script type="module" src="/src/renderer.ts"></script>
+  </body>
+</html>

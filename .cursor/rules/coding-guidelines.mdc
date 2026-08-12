@@ -1,0 +1,43 @@
+---
+description: Tailwind + shadcn first, YAGNI, minimal comments, readable code
+alwaysApply: true
+---
+
+# Coding guidelines
+
+## UI: Tailwind + shadcn
+
+Build UI with the existing Tailwind + shadcn (new-york) setup. Prefer primitives from `@/components/ui` and add missing ones with `pnpm dlx shadcn@latest add <component>`.
+
+Never invent a custom component when shadcn already provides it (Button, Dialog, Select, Table, Tabs, Form, etc.). Compose and style with Tailwind; do not hand-roll equivalents.
+
+## YAGNI and one-liners
+
+Ship only what the current task needs. No speculative abstractions, wrappers, or config.
+
+Prefer a clear one-liner over a multi-step ceremony when the intent stays obvious.
+
+```tsx
+// ✅
+const label = status === "live" ? "Live" : "Idle";
+
+// ❌
+function getStatusLabel(status: string) {
+  if (status === "live") return "Live";
+  return "Idle";
+}
+```
+
+## Comments
+
+Keep comments rare. Names and structure should carry meaning.
+
+If a block needs multiple lines of comments to be understood, that code is invalid. Decompose it into smaller pieces or rethink the design until it reads without a essay.
+
+```ts
+// ✅ rare, short, non-obvious why
+// Bustabit WS sends bust as integer cents
+
+// ❌ narrating what the code already says
+// Loop through games and filter the ones that busted
+```

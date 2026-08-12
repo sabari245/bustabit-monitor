@@ -1,0 +1,91 @@
+:root {
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+}
+
+body {
+  font-family:
+    -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial,
+    sans-serif;
+  background-color: #1e1e1e;
+  color: #e0e0e0;
+}
+
+#app {
+  display: flex;
+  height: 100vh;
+}
+
+#monitor-panel {
+  flex: 0 0 280px;
+  padding: 1.25rem;
+  background-color: #252526;
+  border-right: 1px solid #3c3c3c;
+  overflow-y: auto;
+}
+
+#monitor-panel h1 {
+  margin: 0 0 1.25rem;
+  font-size: 1.125rem;
+  font-weight: 600;
+}
+
+.game-stats {
+  margin: 0;
+}
+
+.stat {
+  margin-bottom: 1rem;
+}
+
+.stat dt {
+  margin-bottom: 0.25rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #9da5b4;
+}
+
+.stat dd {
+  margin: 0;
+  font-size: 0.9375rem;
+  word-break: break-all;
+}
+
+.mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.8125rem;
+}
+
+#game-bust {
+  font-size: 1.25rem;
+  font-weight: 600;
+  color: #4ec9b0;
+}
+
+.status {
+  margin: 1.5rem 0 0;
+  font-size: 0.8125rem;
+  color: #9da5b4;
+}
+
+#game-webview {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  width: 100%;
+  height: 100%;
+  border: none;
+  display: inline-flex;
+}
