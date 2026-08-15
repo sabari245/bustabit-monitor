@@ -38,7 +38,10 @@ jobs:
 
       - name: Install WiX Toolset
         shell: pwsh
-        run: choco install wixtoolset --version=3.14.0 --yes --no-progress
+        run: |
+          choco install wixtoolset --version=3.14.1.20250415 --yes --no-progress
+          Get-Command candle.exe
+          Get-Command light.exe
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
