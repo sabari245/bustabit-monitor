@@ -26,7 +26,10 @@ const gamesEl = document.getElementById('games') as HTMLTableSectionElement;
 const statusEl = document.getElementById('status') as HTMLParagraphElement;
 const developerModeEl = document.getElementById(
   'toggle-developer-mode',
-) as HTMLButtonElement;
+) as HTMLInputElement;
+const developerModeLabelEl = document.getElementById(
+  'developer-mode-label',
+) as HTMLSpanElement;
 const developerOnlyEls = document.querySelectorAll<HTMLElement>('.developer-only');
 const botTokenEl = document.getElementById('bot-token') as HTMLInputElement;
 const chatIdEl = document.getElementById('chat-id') as HTMLInputElement;
@@ -166,8 +169,9 @@ function setAutomationStatus() {
 function setDeveloperMode(enabled: boolean) {
   developerMode = enabled;
   localStorage.setItem(DEVELOPER_MODE_KEY, String(enabled));
-  developerModeEl.textContent = enabled ? 'Exit developer mode' : 'Enable developer mode';
-  developerModeEl.setAttribute('aria-pressed', String(enabled));
+  developerModeEl.checked = enabled;
+  developerModeEl.setAttribute('aria-label', `${enabled ? 'Disable' : 'Enable'} developer mode`);
+  developerModeLabelEl.textContent = 'Developer mode';
   developerOnlyEls.forEach((element) => {
     element.hidden = !enabled;
   });
@@ -393,8 +397,8 @@ copyPromptEl.addEventListener('click', () => {
   logRenderer('info', 'clipboard', 'Chatbot prompt copied');
 });
 
-developerModeEl.addEventListener('click', () => {
-  setDeveloperMode(!developerMode);
+developerModeEl.addEventListener('change', () => {
+  setDeveloperMode(developerModeEl.checked);
   logRenderer('info', 'developer-mode', developerMode ? 'Enabled' : 'Disabled');
 });
 
@@ -509,6 +513,36 @@ function openScriptDialog(script?: AutomationScript) {
   scriptNameEl.focus();
 }
 
+function createHeroIcon(pathData: string) {
+  const namespace = 'http://www.w3.org/2000/svg';
+  const icon = document.createElementNS(namespace, 'svg');
+  const path = document.createElementNS(namespace, 'path');
+
+  icon.setAttribute('class', 'button-icon');
+  icon.setAttribute('viewBox', '0 0 24 24');
+  icon.setAttribute('fill', 'none');
+  icon.setAttribute('stroke', 'currentColor');
+  icon.setAttribute('stroke-width', '1.5');
+  icon.setAttribute('aria-hidden', 'true');
+  path.setAttribute('stroke-linecap', 'round');
+  path.setAttribute('stroke-linejoin', 'round');
+  path.setAttribute('d', pathData);
+  icon.append(path);
+  return icon;
+}
+
+function addButtonIcon(button: HTMLButtonElement, pathData: string) {
+  button.classList.add('with-icon');
+  button.prepend(createHeroIcon(pathData));
+}
+
+addButtonIcon(addScriptEl, 'M12 4.5v15m7.5-7.5h-15');
+addButtonIcon(copyPromptEl, 'M15.75 17.25v3.375c0 .621-.504 1.125-1.125 1.125h-9.75a1.125 1.125 0 0 1-1.125-1.125V10.875c0-.621.504-1.125 1.125-1.125H8.25m7.5 7.5h3.375c.621 0 1.125-.504 1.125-1.125V6.375c0-.621-.504-1.125-1.125-1.125h-9.75c-.621 0-1.125.504-1.125 1.125V9.75m7.5 7.5h-6.375A1.125 1.125 0 0 1 8.25 16.125V9.75');
+addButtonIcon(closeScriptDialogEl, 'M6 18 18 6M6 6l12 12');
+addButtonIcon(refreshLogsEl, 'M16.023 9.348h4.992V4.356m-1.291 9.768a8.25 8.25 0 1 1-2.23-8.362L21.015 9.348');
+addButtonIcon(copyLogsEl, 'M15.75 17.25v3.375c0 .621-.504 1.125-1.125 1.125h-9.75a1.125 1.125 0 0 1-1.125-1.125V10.875c0-.621.504-1.125 1.125-1.125H8.25m7.5 7.5h3.375c.621 0 1.125-.504 1.125-1.125V6.375c0-.621-.504-1.125-1.125-1.125h-9.75c-.621 0-1.125.504-1.125 1.125V9.75m7.5 7.5h-6.375A1.125 1.125 0 0 1 8.25 16.125V9.75');
+addButtonIcon(openLogFolderEl, 'M2.25 12.75V12A2.25 2.25 0 0 1 4.5 9.75h15A2.25 2.25 0 0 1 21.75 12v.75m-8.69-6.44-2.12-2.12a1.5 1.5 0 0 0-1.061-.44H4.5A2.25 2.25 0 0 0 2.25 6v12a2.25 2.25 0 0 0 2.25 2.25h15A2.25 2.25 0 0 0 21.75 18v-5.25a2.25 2.25 0 0 0-2.25-2.25H4.5a2.25 2.25 0 0 0-2.25 2.25Z');
+
 function renderAutomationScripts() {
   setAutomationStatus();
   if (automation.scripts.length === 0) {
@@ -530,6 +564,8 @@ function renderAutomationScripts() {
     const actions = document.createElement('td');
     const toggleLabel = document.createElement('label');
     const toggle = document.createElement('input');
+    const toggleTrack = document.createElement('span');
+    const toggleText = document.createElement('span');
     const edit = document.createElement('button');
     const remove = document.createElement('button');
     const lastRun = scriptRunResults.get(script.id);
@@ -541,17 +577,33 @@ function renderAutomationScripts() {
     toggle.type = 'checkbox';
     toggle.checked = script.enabled;
     toggle.dataset.scriptId = script.id;
+    toggle.setAttribute('role', 'switch');
+    toggle.setAttribute('aria-label', `${script.enabled ? 'Disable' : 'Enable'} ${script.name}`);
     toggleLabel.className = 'script-toggle';
-    toggleLabel.append(toggle, document.createTextNode(script.enabled ? 'On' : 'Off'));
+    toggleTrack.className = 'script-toggle-track';
+    toggleTrack.setAttribute('aria-hidden', 'true');
+    toggleText.className = 'script-toggle-text';
+    toggleText.textContent = script.enabled ? 'On' : 'Off';
+    toggleLabel.append(toggle, toggleTrack, toggleText);
     enabled.append(toggleLabel);
     edit.type = 'button';
-    edit.className = 'secondary compact';
-    edit.textContent = 'Edit';
+    edit.className = 'secondary compact with-icon';
+    edit.append(
+      createHeroIcon(
+        'm16.862 4.487 1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L10.582 16.07a4.5 4.5 0 0 1-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 0 1 1.13-1.897l8.932-8.931Zm0 0L19.5 7.125M18 14.25v4.875A2.625 2.625 0 0 1 15.375 21H5.625A2.625 2.625 0 0 1 3 18.375V8.625A2.625 2.625 0 0 1 5.625 6h4.875',
+      ),
+      document.createTextNode('Edit'),
+    );
     edit.dataset.action = 'edit';
     edit.dataset.scriptId = script.id;
     remove.type = 'button';
-    remove.className = 'secondary compact';
-    remove.textContent = 'Delete';
+    remove.className = 'destructive compact';
+    remove.append(
+      createHeroIcon(
+        'm14.74 9-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673A2.25 2.25 0 0 1 15.92 21H8.08a2.25 2.25 0 0 1-2.24-2.077L4.772 5.79m14.456 0a48.108 48.108 0 0 0-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 0 1 3.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 0 0-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 0 0-7.5 0',
+      ),
+      document.createTextNode('Delete'),
+    );
     remove.dataset.action = 'delete';
     remove.dataset.scriptId = script.id;
     actions.className = 'script-actions';

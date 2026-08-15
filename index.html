@@ -18,14 +18,11 @@
         </div>
         <div class="header-actions">
           <p id="status" class="status">Connecting...</p>
-          <button
-            id="toggle-developer-mode"
-            class="secondary compact"
-            type="button"
-            aria-pressed="false"
-          >
-            Enable developer mode
-          </button>
+          <label class="developer-toggle">
+            <span id="developer-mode-label">Developer mode</span>
+            <input id="toggle-developer-mode" type="checkbox" role="switch" />
+            <span class="script-toggle-track" aria-hidden="true"></span>
+          </label>
         </div>
       </header>
       <section class="table-panel">
@@ -75,7 +72,7 @@
             <h3>Round scripts</h3>
             <p>Every enabled script runs once for each new round.</p>
           </div>
-          <button id="add-script" class="compact" type="button" aria-label="Add script">+ Add script</button>
+          <button id="add-script" class="compact" type="button">Add script</button>
         </div>
         <div class="script-table-wrap">
           <table class="script-table">

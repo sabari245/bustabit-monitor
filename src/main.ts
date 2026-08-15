@@ -323,12 +323,15 @@ function getAutomationSettings(): AutomationSettings {
           typeof script.enabled === 'boolean',
       )
     : typeof settings.script === 'string' && settings.script
-      ? [{
-          id: 'migrated-script',
-          name: 'My automation',
-          code: settings.script,
-          enabled: settings.active === true,
-        }]
+      ? [
+          {
+            id: 'migrated-script',
+            name: 'My automation',
+            code: settings.script,
+            enabled: settings.active === true,
+          },
+          ...DEFAULT_AUTOMATION_SCRIPTS.map((script) => ({ ...script })),
+        ]
       : DEFAULT_AUTOMATION_SCRIPTS.map((script) => ({ ...script }));
   return {
     botToken: typeof settings.botToken === 'string' ? settings.botToken : '',
