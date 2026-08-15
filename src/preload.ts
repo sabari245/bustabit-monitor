@@ -4,6 +4,8 @@ import type {
   BackfillProgress,
   GameData,
   LogLevel,
+  RedbotChatMessage,
+  RedbotAutomationCommand,
 } from './types';
 
 try {
@@ -24,6 +26,12 @@ try {
       ipcRenderer.invoke('automation:save', settings),
     sendTelegramMessage: (botToken: string, chatId: string, text: string) =>
       ipcRenderer.invoke('telegram:send', botToken, chatId, text),
+    getRedbotBets: (offset = 0, limit = 10) =>
+      ipcRenderer.invoke('redbot:activity:get', offset, limit),
+    storeRedbotChatMessages: (messages: RedbotChatMessage[]) =>
+      ipcRenderer.invoke('redbot:activity:store', messages),
+    trackRedbotAutomationCommand: (command: RedbotAutomationCommand) =>
+      ipcRenderer.invoke('redbot:command:track', command),
   });
 } catch (error) {
   ipcRenderer.send(

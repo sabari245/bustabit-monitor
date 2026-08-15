@@ -23,11 +23,59 @@ export interface AutomationSettings {
   botToken: string;
   chatId: string;
   scripts: AutomationScript[];
+  redbotScripts: AutomationScript[];
+  redbotDefaultsVersion: number;
 }
 
 export interface TelegramResult {
   ok: boolean;
   error?: string;
+}
+
+export type RedbotActivityKind = 'balance' | 'bet' | 'win' | 'loss';
+
+export interface RedbotChatMessage {
+  sourceKey: string;
+  chatTime: string | null;
+  message: string;
+}
+
+export interface RedbotActivity {
+  id: string;
+  sourceKey: string;
+  kind: RedbotActivityKind;
+  message: string;
+  amountBits: number | null;
+  balanceBits: number | null;
+  chatTime: string | null;
+  recordedAt: string;
+}
+
+export type RedbotBetOutcome = 'won' | 'lost';
+
+export interface RedbotBetRecord {
+  id: string;
+  outcome: RedbotBetOutcome;
+  scriptName: string;
+  triggerRoundId: number;
+  details: string;
+  wagerBits: number;
+  netBits: number;
+  balanceAfterBits: number | null;
+}
+
+export interface RedbotAutomationCommand {
+  scriptId: string;
+  scriptName: string;
+  triggerRoundId: number;
+  command: string;
+}
+
+export interface RedbotBetPage {
+  items: RedbotBetRecord[];
+  total: number;
+  balanceBits: number | null;
+  balanceUpdatedAt: string | null;
 }
 
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
@@ -66,6 +114,9 @@ declare global {
         chatId: string,
         text: string,
       ) => Promise<TelegramResult>;
+      getRedbotBets: (offset?: number, limit?: number) => Promise<RedbotBetPage>;
+      storeRedbotChatMessages: (messages: RedbotChatMessage[]) => Promise<number>;
+      trackRedbotAutomationCommand: (command: RedbotAutomationCommand) => Promise<void>;
     };
   }
 }

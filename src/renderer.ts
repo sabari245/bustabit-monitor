@@ -5,6 +5,9 @@ import type {
   AutomationSettings,
   GameData,
   LogLevel,
+  RedbotBetPage,
+  RedbotBetRecord,
+  RedbotChatMessage,
   StoredGame,
 } from './types';
 
@@ -12,8 +15,9 @@ const BUSTABIT_URL = 'https://bustabit.com/play';
 const REDBOT_CHANNEL = '@Redbot';
 const MAX_GAMES_IN_MEMORY = 100;
 const MAX_VISIBLE_GAMES = 10;
+const REDBOT_ACTIVITY_PAGE_SIZE = 10;
 const DEVELOPER_MODE_KEY = 'bustabit-monitor:developer-mode';
-const AsyncFunction = Object.getPrototypeOf(async () => undefined).constructor as new (
+const AsyncFunction = Object.getPrototypeOf(async (): Promise<undefined> => undefined).constructor as new (
   ...args: string[]
 ) => (
   round: StoredGame,
@@ -22,9 +26,92 @@ const AsyncFunction = Object.getPrototypeOf(async () => undefined).constructor a
   getHistory: (offset?: number, limit?: number) => Promise<StoredGame[]>,
 ) => Promise<unknown>;
 
+type RedbotApi = {
+  send: (command: string) => Promise<void>;
+  bet: (bits: number | 'max') => Promise<void>;
+  one: (bits: number) => Promise<void>;
+  low: (bits: number) => Promise<void>;
+  underTen: (bits: number) => Promise<void>;
+  safe: (bits: number) => Promise<void>;
+  spin: (bits: number, times?: number) => Promise<void>;
+  stop: () => Promise<void>;
+  balance: () => Promise<void>;
+  withdraw: (bits: number) => Promise<void>;
+};
+
+const RedbotAsyncFunction = Object.getPrototypeOf(async (): Promise<undefined> => undefined).constructor as new (
+  ...args: string[]
+) => (
+  round: StoredGame,
+  recentRounds: StoredGame[],
+  redbot: RedbotApi,
+  getHistory: (offset?: number, limit?: number) => Promise<StoredGame[]>,
+) => Promise<unknown>;
+
 const webview = document.getElementById('game-webview') as Electron.WebviewTag;
 const explorerStatusEl = document.getElementById('explorer-status') as HTMLSpanElement;
 const explorerValueEl = document.getElementById('explorer-value') as HTMLElement;
+const redbotAutomationStatusEl = document.getElementById(
+  'redbot-automation-status',
+) as HTMLSpanElement;
+const redbotScriptsEl = document.getElementById(
+  'redbot-automation-scripts',
+) as HTMLTableSectionElement;
+const addRedbotScriptEl = document.getElementById('add-redbot-script') as HTMLButtonElement;
+const redbotScriptDialogEl = document.getElementById(
+  'redbot-script-dialog',
+) as HTMLDialogElement;
+const redbotScriptFormEl = document.getElementById('redbot-script-form') as HTMLFormElement;
+const redbotScriptDialogTitleEl = document.getElementById(
+  'redbot-script-dialog-title',
+) as HTMLHeadingElement;
+const closeRedbotScriptDialogEl = document.getElementById(
+  'close-redbot-script-dialog',
+) as HTMLButtonElement;
+const redbotScriptNameEl = document.getElementById('redbot-script-name') as HTMLInputElement;
+const redbotScriptCodeEl = document.getElementById('redbot-script-code') as HTMLTextAreaElement;
+const redbotScriptResultEl = document.getElementById(
+  'redbot-script-result',
+) as HTMLParagraphElement;
+const copyRedbotPromptEl = document.getElementById('copy-redbot-prompt') as HTMLButtonElement;
+const redbotReadinessDialogEl = document.getElementById(
+  'redbot-readiness-dialog',
+) as HTMLDialogElement;
+const redbotReadinessTitleEl = document.getElementById(
+  'redbot-readiness-title',
+) as HTMLHeadingElement;
+const redbotReadinessMessageEl = document.getElementById(
+  'redbot-readiness-message',
+) as HTMLParagraphElement;
+const redbotReadinessListEl = document.getElementById(
+  'redbot-readiness-list',
+) as HTMLUListElement;
+const redbotReadinessWarningEl = document.getElementById(
+  'redbot-readiness-warning',
+) as HTMLParagraphElement;
+const closeRedbotReadinessDialogEl = document.getElementById(
+  'close-redbot-readiness-dialog',
+) as HTMLButtonElement;
+const webviewFrameEl = document.getElementById('webview-frame') as HTMLDivElement;
+const webviewLockEl = document.getElementById('webview-lock') as HTMLDivElement;
+const redbotBalanceEl = document.getElementById('redbot-balance') as HTMLElement;
+const redbotBalanceUpdatedEl = document.getElementById(
+  'redbot-balance-updated',
+) as HTMLSpanElement;
+const redbotActivityEl = document.getElementById('redbot-activity') as HTMLTableSectionElement;
+const redbotActivityPreviousEl = document.getElementById(
+  'redbot-activity-previous',
+) as HTMLButtonElement;
+const redbotActivityFirstEl = document.getElementById(
+  'redbot-activity-first',
+) as HTMLButtonElement;
+const redbotActivityNextEl = document.getElementById(
+  'redbot-activity-next',
+) as HTMLButtonElement;
+const redbotActivityLastEl = document.getElementById(
+  'redbot-activity-last',
+) as HTMLButtonElement;
+const redbotActivityPageEl = document.getElementById('redbot-activity-page') as HTMLSpanElement;
 const gamesEl = document.getElementById('games') as HTMLTableSectionElement;
 const statusEl = document.getElementById('status') as HTMLParagraphElement;
 const developerModeEl = document.getElementById(
@@ -61,13 +148,22 @@ let automation: AutomationSettings = {
   botToken: '',
   chatId: '',
   scripts: [],
+  redbotScripts: [],
+  redbotDefaultsVersion: 1,
 };
 let roundQueue = Promise.resolve();
 let displayedLogs = '';
 let developerMode = localStorage.getItem(DEVELOPER_MODE_KEY) === 'true';
 let webviewReady = false;
 let editingScriptId: string | null = null;
+let editingRedbotScriptId: string | null = null;
 const scriptRunResults = new Map<string, { message: string; error: boolean }>();
+const redbotScriptRunResults = new Map<string, { message: string; error: boolean }>();
+let redbotActivityOffset = 0;
+let redbotActivityTotal = 0;
+let redbotActivitySyncing = false;
+let redbotBalanceVerifiedAt: string | null = null;
+let redbotBalanceCheckPromise: Promise<number> | null = null;
 
 const CHATBOT_PROMPT = `I need you to write a JavaScript automation script for a desktop application called Bustabit Monitor.
 
@@ -150,6 +246,50 @@ if (latestThousand.length >= 100) {
 My requested strategy
 Describe the strategy here, including thresholds, lookback size, message wording, and any cooldown or edge-case behavior. Then generate the paste-ready script.`;
 
+const REDBOT_CHATBOT_PROMPT = `I need you to write a JavaScript Redbot automation strategy for Bustabit Monitor.
+
+The script runs once after every newly completed Bustabit round. Return only paste-ready JavaScript, without Markdown fences. It runs inside an async function and already receives these values:
+
+1. round
+The newest completed round: { id, hash, bust, receivedAt, reconstructed? }.
+
+2. recentRounds
+Up to 100 completed rounds, newest first. recentRounds[0] is round. Do not mutate it.
+
+3. redbot
+An object that sends commands to the currently selected private Redbot chat. Every method is async and must be awaited:
+- await redbot.bet(bits) or await redbot.bet('max'): bet on the next game being under 1.98x.
+- await redbot.one(bits): bet on under 1.01x.
+- await redbot.low(bits): bet on under 1.2x.
+- await redbot.underTen(bits): bet on under 10x.
+- await redbot.safe(bits): bet on under 28x.
+- await redbot.spin(bits, times = 1): run Redbot slots.
+- await redbot.stop(): stop an active slot run.
+- await redbot.balance(): request the Redbot balance.
+- await redbot.withdraw(bits): withdraw from Redbot.
+- await redbot.send(command): send another documented Redbot command beginning with $.
+
+4. getHistory(offset = 0, limit = 100)
+Loads stored rounds newest first. Limit is 1-1000. Page through history if more is required.
+
+Safety rules
+- This controls real Redbot funds. Use conservative bit amounts and never infer an omitted amount.
+- Usually send at most one wagering command per round.
+- Verify that enough history exists before calculating a streak or statistic.
+- Do not use timers, polling, DOM access, fetch, imports, require, filesystem APIs, or direct Bustabit/Redbot APIs.
+- Do not assume variables persist between invocations.
+- The app itself verifies that the user is signed in, @Redbot is the active channel, and the chat input is visible before enabling or sending.
+- If the requested amount, thresholds, lookback, cooldown, or loss limits are ambiguous, ask focused questions instead of generating code.
+
+Example: bet 1 bit after five consecutive rounds below 1.98x:
+const window = recentRounds.slice(0, 5);
+if (window.length === 5 && window.every((item) => item.bust < 1.98)) {
+  await redbot.bet(1);
+}
+
+My requested strategy
+Describe the trigger, command, bit amount, lookback, cooldown, and stopping rules here.`;
+
 function setStatus(message: string) {
   statusEl.textContent = message;
 }
@@ -157,6 +297,11 @@ function setStatus(message: string) {
 function setScriptResult(message: string, error = false) {
   scriptResultEl.textContent = message;
   scriptResultEl.classList.toggle('error', error);
+}
+
+function setRedbotScriptResult(message: string, error = false) {
+  redbotScriptResultEl.textContent = message;
+  redbotScriptResultEl.classList.toggle('error', error);
 }
 
 function setAutomationResult(message: string, error = false) {
@@ -168,6 +313,17 @@ function setAutomationStatus() {
   const activeCount = automation.scripts.filter((script) => script.enabled).length;
   automationStatusEl.textContent = `${activeCount} active`;
   automationStatusEl.classList.toggle('running', activeCount > 0);
+}
+
+function setRedbotAutomationStatus() {
+  const activeCount = automation.redbotScripts.filter((script) => script.enabled).length;
+  const locked = activeCount > 0;
+  redbotAutomationStatusEl.textContent = `${activeCount} active`;
+  redbotAutomationStatusEl.classList.toggle('running', locked);
+  webviewFrameEl.classList.toggle('locked', locked);
+  webviewLockEl.hidden = !locked;
+  webview.toggleAttribute('inert', locked);
+  if (locked) webview.blur();
 }
 
 function setDeveloperMode(enabled: boolean) {
@@ -203,8 +359,9 @@ function getWebviewPreloadPath(): string | null {
 
 type RedbotChatProbe = {
   pageReady: boolean;
-  open: boolean;
-  label: string | null;
+  activeChannel: string;
+  redbotTabAvailable: boolean;
+  redbotSelected: boolean;
   chatInputReady: boolean;
 };
 
@@ -254,19 +411,138 @@ function probeRedbotChat(): Promise<RedbotChatProbe> {
       }
 
       if (!isPageReady()) {
-        return { pageReady: false, open: false, label: null, chatInputReady: false };
+        return {
+          pageReady: false,
+          activeChannel: '',
+          redbotTabAvailable: false,
+          redbotSelected: false,
+          chatInputReady: false,
+        };
       }
 
       var activeChannel = localStorage.getItem('active_channel') || '';
-      var open = isRedbotChannel(activeChannel) || findRedbotTabLabel() != null;
+      var redbotSelected = isRedbotChannel(activeChannel);
       return {
         pageReady: true,
-        open: open,
-        label: open ? 'Redbot' : null,
-        chatInputReady: open && findChatInput() != null,
+        activeChannel: activeChannel,
+        redbotTabAvailable: findRedbotTabLabel() != null,
+        redbotSelected: redbotSelected,
+        chatInputReady: redbotSelected && findChatInput() != null,
       };
     })();
   `);
+}
+
+function probeRedbotActivityMessages(): Promise<RedbotChatMessage[]> {
+  return webview.executeJavaScript(`
+    (function () {
+      var activityPattern = /(?:Your balance is [\\d,.]+ bits?|You have bet [\\d,.]+ bits?|The game was .+?\\. You (?:won|lost) [\\d,.]+ bits?)/i;
+      var candidates = [];
+      var elements = document.querySelectorAll('div, li, p');
+
+      function textOf(node) {
+        var text = node.innerText !== undefined ? node.innerText : node.textContent;
+        return text == null ? '' : String(text).trim().replace(/\\s+/g, ' ');
+      }
+
+      for (var i = 0; i < elements.length; i++) {
+        var text = textOf(elements[i]);
+        if (!text || text.length > 500 || text.indexOf('Redbot:') < 0) continue;
+        var rect = elements[i].getBoundingClientRect();
+        if (rect.width <= 0 || rect.height <= 0 || rect.height > 60) continue;
+
+        var labelIndex = text.indexOf('Redbot:');
+        var message = text.slice(labelIndex + 'Redbot:'.length).trim();
+        if (!activityPattern.test(message)) continue;
+        var timeMatch = text.slice(0, labelIndex).match(/(?:^|\\s)(\\d{1,2}:\\d{2})(?:\\s|$)/);
+        candidates.push({
+          chatTime: timeMatch ? timeMatch[1] : null,
+          message: message,
+          top: Math.round(rect.top),
+        });
+      }
+
+      candidates.sort(function (left, right) { return left.top - right.top; });
+      var rowKeys = Object.create(null);
+      var occurrences = Object.create(null);
+      var output = [];
+      for (var j = 0; j < candidates.length; j++) {
+        var rowKey = String(candidates[j].top) + '|' + candidates[j].message;
+        if (rowKeys[rowKey]) continue;
+        rowKeys[rowKey] = true;
+        var contentKey = (candidates[j].chatTime || '') + '|' + candidates[j].message.toLowerCase();
+        occurrences[contentKey] = (occurrences[contentKey] || 0) + 1;
+        output.push({
+          sourceKey: contentKey + '|' + occurrences[contentKey],
+          chatTime: candidates[j].chatTime,
+          message: candidates[j].message,
+        });
+      }
+      return output;
+    })();
+  `);
+}
+
+async function syncRedbotActivity(probe: RedbotChatProbe) {
+  if (redbotActivitySyncing || !probe.redbotSelected || !webviewReady) return;
+  redbotActivitySyncing = true;
+  try {
+    const messages = await probeRedbotActivityMessages();
+    if (messages.length === 0) return;
+    const stored = await window.electronAPI.storeRedbotChatMessages(messages);
+    if (stored > 0) await refreshRedbotBets();
+  } catch (error) {
+    logRenderer('warn', 'redbot', 'Could not synchronize Redbot chat activity', errorDetails(error));
+  } finally {
+    redbotActivitySyncing = false;
+  }
+}
+
+function wait(milliseconds: number) {
+  return new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
+}
+
+async function verifyRedbotBalance() {
+  if (redbotBalanceCheckPromise) return redbotBalanceCheckPromise;
+  redbotBalanceCheckPromise = (async () => {
+    const probe = await getRedbotProbe();
+    if (!redbotReady(probe)) throw new Error('The Redbot chat is not ready');
+
+    const existingMessages = await probeRedbotActivityMessages();
+    await window.electronAPI.storeRedbotChatMessages(existingMessages);
+    const before = await window.electronAPI.getRedbotBets(0, REDBOT_ACTIVITY_PAGE_SIZE);
+    explorerValueEl.textContent = 'Requesting the latest Redbot balance…';
+    explorerStatusEl.textContent = 'Checking balance';
+    await sendRedbotCommand('$bal');
+
+    const deadline = Date.now() + 10000;
+    while (Date.now() < deadline) {
+      const messages = await probeRedbotActivityMessages();
+      await window.electronAPI.storeRedbotChatMessages(messages);
+      const page = await window.electronAPI.getRedbotBets(
+        redbotActivityOffset,
+        REDBOT_ACTIVITY_PAGE_SIZE,
+      );
+      renderRedbotBets(page);
+      if (
+        page.balanceBits != null &&
+        page.balanceUpdatedAt &&
+        page.balanceUpdatedAt !== before.balanceUpdatedAt
+      ) {
+        redbotBalanceVerifiedAt = page.balanceUpdatedAt;
+        return page.balanceBits;
+      }
+      await wait(250);
+    }
+    throw new Error('Redbot did not return a new balance within 10 seconds');
+  })();
+
+  try {
+    return await redbotBalanceCheckPromise;
+  } finally {
+    redbotBalanceCheckPromise = null;
+    void refreshExplorerValue();
+  }
 }
 
 async function refreshExplorerValue() {
@@ -286,23 +562,215 @@ async function refreshExplorerValue() {
       return;
     }
 
-    const missing = !probe.open;
-    explorerValueEl.textContent = missing
-      ? '(Redbot chat not open)'
-      : probe.chatInputReady
-        ? probe.label ?? 'Redbot'
-        : `${probe.label ?? 'Redbot'} · input missing`;
-    explorerValueEl.classList.toggle('missing', missing);
-    explorerStatusEl.textContent = missing
-      ? 'Closed'
-      : probe.chatInputReady
-        ? 'Ready'
-        : 'Open';
+    if (!probe.activeChannel) {
+      explorerValueEl.textContent = 'Sign in to Bustabit';
+      explorerValueEl.classList.add('missing');
+      explorerStatusEl.textContent = 'Signed out';
+    } else if (!probe.redbotSelected) {
+      explorerValueEl.textContent = probe.redbotTabAvailable
+        ? 'Select the Redbot conversation'
+        : 'Open a private chat with Redbot';
+      explorerValueEl.classList.add('missing');
+      explorerStatusEl.textContent = 'Select Redbot';
+    } else if (!probe.chatInputReady) {
+      explorerValueEl.textContent = 'Open the Redbot chat view';
+      explorerValueEl.classList.add('missing');
+      explorerStatusEl.textContent = 'Chat hidden';
+    } else {
+      explorerValueEl.textContent = 'Redbot chat input is ready';
+      explorerValueEl.classList.remove('missing');
+      explorerStatusEl.textContent = 'Ready';
+    }
+    void syncRedbotActivity(probe);
   } catch (error) {
     explorerValueEl.textContent = '(unavailable)';
     explorerValueEl.classList.add('missing');
     explorerStatusEl.textContent = 'Error';
   }
+}
+
+function redbotReady(probe: RedbotChatProbe) {
+  return probe.pageReady && probe.redbotSelected && probe.chatInputReady;
+}
+
+function unavailableRedbotProbe(): RedbotChatProbe {
+  return {
+    pageReady: false,
+    activeChannel: '',
+    redbotTabAvailable: false,
+    redbotSelected: false,
+    chatInputReady: false,
+  };
+}
+
+async function getRedbotProbe() {
+  if (!webviewReady) return unavailableRedbotProbe();
+  try {
+    return await probeRedbotChat();
+  } catch {
+    return unavailableRedbotProbe();
+  }
+}
+
+function showRedbotReadinessDialog(probe: RedbotChatProbe) {
+  redbotReadinessWarningEl.textContent = 'No wager was sent and the script remains disabled.';
+  const signedIn = probe.pageReady && Boolean(probe.activeChannel);
+  const steps = [
+    { ready: probe.pageReady, text: 'Bustabit has finished loading.' },
+    { ready: signedIn, text: 'You are signed in and chat is available.' },
+    {
+      ready: probe.redbotSelected,
+      text: probe.redbotTabAvailable || probe.redbotSelected
+        ? 'The private @Redbot conversation is selected.'
+        : 'A private @Redbot conversation is open.',
+    },
+    { ready: probe.chatInputReady, text: 'The Redbot message input is visible.' },
+  ];
+
+  if (!probe.pageReady) {
+    redbotReadinessTitleEl.textContent = 'Bustabit is not ready';
+    redbotReadinessMessageEl.textContent = 'Wait for the embedded Bustabit page to finish loading.';
+  } else if (!signedIn) {
+    redbotReadinessTitleEl.textContent = 'Sign in to Bustabit';
+    redbotReadinessMessageEl.textContent = 'Redbot automation requires an authenticated Bustabit chat session.';
+  } else if (!probe.redbotSelected) {
+    redbotReadinessTitleEl.textContent = 'Select the Redbot conversation';
+    redbotReadinessMessageEl.textContent = probe.redbotTabAvailable
+      ? 'Open the Redbot tab so @Redbot becomes the active channel.'
+      : 'Add or open Redbot as a private conversation, then select it.';
+  } else {
+    redbotReadinessTitleEl.textContent = 'Open the Redbot chat view';
+    redbotReadinessMessageEl.textContent = 'Leave History, Players, Channels, or other chat panels and return to the message view.';
+  }
+
+  redbotReadinessListEl.replaceChildren(...steps.map((step) => {
+    const item = document.createElement('li');
+    item.classList.toggle('ready', step.ready);
+    item.textContent = step.text;
+    return item;
+  }));
+  redbotReadinessDialogEl.showModal();
+}
+
+function showRedbotBalanceError(probe: RedbotChatProbe, error: unknown) {
+  showRedbotReadinessDialog(probe);
+  redbotReadinessTitleEl.textContent = 'Could not verify the Redbot balance';
+  redbotReadinessMessageEl.textContent = getErrorMessage(error);
+  const item = document.createElement('li');
+  item.textContent = 'Redbot returned a fresh, parseable balance response.';
+  redbotReadinessListEl.append(item);
+  redbotReadinessWarningEl.textContent = '$bal was sent, but no wager was sent and the script remains disabled.';
+}
+
+const REDBOT_COMMAND_PATTERN = /^\$(?:(?:bet\s+(?:max|\d+(?:\.\d+)?)|(?:o|one|lo|low|ut|safe)\s+\d+(?:\.\d+)?|spin\s+\d+(?:\.\d+)?(?:\s+\d+t)?|withdraw\s+\d+(?:\.\d+)?)|(?:help|stop|balance|bal|monthly|race|pos|level|drop|eligible|blacklist|showbalanceafterbet|hidebalanceafterbet|enableshortcuts|disableshortcuts))$/i;
+
+function normalizeRedbotCommand(command: string) {
+  if (typeof command !== 'string') throw new Error('redbot.send requires a command string');
+  const normalized = command.trim().replace(/\s+/g, ' ');
+  if (!REDBOT_COMMAND_PATTERN.test(normalized)) {
+    throw new Error('redbot.send only accepts documented Redbot commands');
+  }
+  return normalized;
+}
+
+function formatBits(bits: number) {
+  if (!Number.isFinite(bits) || bits <= 0 || !Number.isSafeInteger(bits) && !/^\d+\.\d+$/.test(String(bits))) {
+    throw new Error('Redbot bit amounts must be positive finite numbers');
+  }
+  const formatted = String(bits);
+  if (!/^\d+(?:\.\d+)?$/.test(formatted)) {
+    throw new Error('Redbot bit amounts must use ordinary decimal notation');
+  }
+  return formatted;
+}
+
+async function sendRedbotCommand(command: string) {
+  const normalized = normalizeRedbotCommand(command);
+  if (!webviewReady) throw new Error('The Bustabit webview is not ready');
+
+  const result = await webview.executeJavaScript(`
+    (function () {
+      var targetChannel = ${JSON.stringify(REDBOT_CHANNEL)};
+      var command = ${JSON.stringify(normalized)};
+      var activeChannel = localStorage.getItem('active_channel') || '';
+      if (activeChannel.toLowerCase() !== targetChannel.toLowerCase()) {
+        return { ok: false, error: 'Select the private Redbot conversation first' };
+      }
+
+      var input = document.querySelector('input[name="message-input"]');
+      if (!input || !input.getBoundingClientRect) {
+        return { ok: false, error: 'Open the Redbot chat view first' };
+      }
+      var style = window.getComputedStyle(input);
+      var rect = input.getBoundingClientRect();
+      if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) === 0 || rect.width <= 0 || rect.height <= 0) {
+        return { ok: false, error: 'The Redbot message input is not visible' };
+      }
+
+      var valueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+      valueSetter.call(input, command);
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+      input.focus();
+      input.dispatchEvent(new KeyboardEvent('keydown', {
+        key: 'Enter',
+        code: 'Enter',
+        keyCode: 13,
+        which: 13,
+        bubbles: true,
+        cancelable: true,
+      }));
+      input.dispatchEvent(new KeyboardEvent('keyup', {
+        key: 'Enter',
+        code: 'Enter',
+        keyCode: 13,
+        which: 13,
+        bubbles: true,
+        cancelable: true,
+      }));
+      return { ok: true };
+    })();
+  `) as { ok: boolean; error?: string };
+
+  if (!result.ok) throw new Error(result.error ?? 'Could not send the Redbot command');
+}
+
+function createRedbotApi(round: StoredGame, script: AutomationScript): RedbotApi {
+  const send = async (command: string) => {
+    const stillEnabled = automation.redbotScripts.some(
+      (item) => item.id === script.id && item.enabled,
+    );
+    if (!stillEnabled) throw new Error('The Redbot script was disabled before sending');
+    await sendRedbotCommand(command);
+    await window.electronAPI.trackRedbotAutomationCommand({
+      scriptId: script.id,
+      scriptName: script.name,
+      triggerRoundId: round.id,
+      command,
+    });
+    logRenderer('info', 'redbot', 'Redbot command sent', {
+      roundId: round.id,
+      commandName: command.trim().split(/\s+/)[0],
+    });
+  };
+
+  return {
+    send,
+    bet: (bits) => send(`$bet ${bits === 'max' ? 'max' : formatBits(bits)}`),
+    one: (bits) => send(`$one ${formatBits(bits)}`),
+    low: (bits) => send(`$low ${formatBits(bits)}`),
+    underTen: (bits) => send(`$ut ${formatBits(bits)}`),
+    safe: (bits) => send(`$safe ${formatBits(bits)}`),
+    spin: (bits, times = 1) => {
+      if (!Number.isSafeInteger(times) || times <= 0) {
+        throw new Error('redbot.spin times must be a positive integer');
+      }
+      return send(`$spin ${formatBits(bits)}${times === 1 ? '' : ` ${times}t`}`);
+    },
+    stop: () => send('$stop'),
+    balance: () => send('$balance'),
+    withdraw: (bits) => send(`$withdraw ${formatBits(bits)}`),
+  };
 }
 
 async function initialize() {
@@ -311,9 +779,10 @@ async function initialize() {
   if (!window.electronAPI) {
     throw new Error('Electron preload bridge is unavailable. Fully restart the application.');
   }
-  const [storedGames, settings] = await Promise.all([
+  const [storedGames, settings, redbotActivity] = await Promise.all([
     window.electronAPI.getRecentGames(),
     window.electronAPI.getAutomationSettings(),
+    window.electronAPI.getRedbotBets(0, REDBOT_ACTIVITY_PAGE_SIZE),
   ]);
   games.push(...storedGames.slice(0, MAX_GAMES_IN_MEMORY));
   automation = settings;
@@ -321,10 +790,13 @@ async function initialize() {
   chatIdEl.value = settings.chatId;
   setAutomationStatus();
   renderAutomationScripts();
+  renderRedbotScripts();
+  renderRedbotBets(redbotActivity);
   renderGames();
   logRenderer('info', 'app', 'Renderer initialization completed', {
     recentRoundsLoaded: games.length,
     enabledScriptCount: settings.scripts.filter((script) => script.enabled).length,
+    enabledRedbotScriptCount: settings.redbotScripts.filter((script) => script.enabled).length,
   });
 }
 
@@ -392,6 +864,7 @@ webview.addEventListener('did-stop-loading', () => {
 
 webview.addEventListener('did-navigate', (event) => {
   webviewReady = false;
+  redbotBalanceVerifiedAt = null;
   explorerStatusEl.textContent = 'Waiting…';
   logRenderer('info', 'webview', 'WebView navigated', { url: event.url });
 });
@@ -608,6 +1081,158 @@ scriptsEl.addEventListener('click', async (event) => {
   }
 });
 
+addRedbotScriptEl.addEventListener('click', () => openRedbotScriptDialog());
+
+closeRedbotScriptDialogEl.addEventListener('click', () => redbotScriptDialogEl.close());
+closeRedbotReadinessDialogEl.addEventListener('click', () => redbotReadinessDialogEl.close());
+
+redbotScriptFormEl.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const name = redbotScriptNameEl.value.trim();
+  const code = redbotScriptCodeEl.value;
+  if (!name || !code.trim()) {
+    setRedbotScriptResult('Enter both a name and script code.', true);
+    return;
+  }
+
+  const previousAutomation = automation;
+  try {
+    new RedbotAsyncFunction('round', 'recentRounds', 'redbot', 'getHistory', code);
+    const existing = automation.redbotScripts.find(
+      (script) => script.id === editingRedbotScriptId,
+    );
+    const script: AutomationScript = {
+      id: existing?.id ?? crypto.randomUUID(),
+      name,
+      code,
+      enabled: existing?.enabled ?? false,
+    };
+    automation = {
+      ...automation,
+      redbotScripts: existing
+        ? automation.redbotScripts.map((item) => item.id === script.id ? script : item)
+        : [...automation.redbotScripts, script],
+    };
+    await saveAutomationSettings();
+    renderRedbotScripts();
+    redbotScriptDialogEl.close();
+    logRenderer('info', 'redbot', existing ? 'Redbot script updated' : 'Redbot script added', {
+      scriptId: script.id,
+      scriptName: script.name,
+      scriptCharacters: script.code.length,
+    });
+  } catch (error) {
+    automation = previousAutomation;
+    setRedbotScriptResult(`Script error: ${getErrorMessage(error)}`, true);
+  }
+});
+
+copyRedbotPromptEl.addEventListener('click', () => {
+  window.electronAPI.copyText(REDBOT_CHATBOT_PROMPT);
+  setRedbotScriptResult('Redbot chatbot prompt copied.');
+  logRenderer('info', 'clipboard', 'Redbot chatbot prompt copied');
+});
+
+redbotScriptsEl.addEventListener('change', async (event) => {
+  const toggle = event.target as HTMLInputElement;
+  if (!toggle.matches('input[data-redbot-script-id]')) return;
+  const script = automation.redbotScripts.find(
+    (item) => item.id === toggle.dataset.redbotScriptId,
+  );
+  if (!script) return;
+
+  const previousEnabled = script.enabled;
+  if (toggle.checked) {
+    const probe = await getRedbotProbe();
+    await refreshExplorerValue();
+    if (!redbotReady(probe)) {
+      toggle.checked = false;
+      showRedbotReadinessDialog(probe);
+      return;
+    }
+    toggle.disabled = true;
+    try {
+      await verifyRedbotBalance();
+    } catch (error) {
+      toggle.checked = false;
+      showRedbotBalanceError(probe, error);
+      return;
+    } finally {
+      toggle.disabled = false;
+    }
+  }
+
+  script.enabled = toggle.checked;
+  try {
+    await saveAutomationSettings();
+    renderRedbotScripts();
+    logRenderer('info', 'redbot', script.enabled ? 'Redbot script enabled' : 'Redbot script disabled', {
+      scriptId: script.id,
+      scriptName: script.name,
+    });
+  } catch (error) {
+    script.enabled = previousEnabled;
+    renderRedbotScripts();
+    setRedbotScriptResult(`Could not update Redbot script: ${getErrorMessage(error)}`, true);
+  }
+});
+
+redbotScriptsEl.addEventListener('click', async (event) => {
+  const button = (event.target as HTMLElement).closest<HTMLButtonElement>('button[data-redbot-action]');
+  if (!button) return;
+  const script = automation.redbotScripts.find(
+    (item) => item.id === button.dataset.redbotScriptId,
+  );
+  if (!script) return;
+
+  if (button.dataset.redbotAction === 'edit') {
+    openRedbotScriptDialog(script);
+    return;
+  }
+  if (button.dataset.redbotAction !== 'delete' || !window.confirm(`Delete “${script.name}”?`)) return;
+
+  const previousScripts = automation.redbotScripts;
+  automation = {
+    ...automation,
+    redbotScripts: automation.redbotScripts.filter((item) => item.id !== script.id),
+  };
+  redbotScriptRunResults.delete(script.id);
+  try {
+    await saveAutomationSettings();
+    renderRedbotScripts();
+    logRenderer('info', 'redbot', 'Redbot script deleted', {
+      scriptId: script.id,
+      scriptName: script.name,
+    });
+  } catch (error) {
+    automation = { ...automation, redbotScripts: previousScripts };
+    renderRedbotScripts();
+    setRedbotScriptResult(`Could not delete Redbot script: ${getErrorMessage(error)}`, true);
+  }
+});
+
+redbotActivityFirstEl.addEventListener('click', async () => {
+  redbotActivityOffset = 0;
+  await refreshRedbotBets();
+});
+
+redbotActivityPreviousEl.addEventListener('click', async () => {
+  redbotActivityOffset = Math.max(0, redbotActivityOffset - REDBOT_ACTIVITY_PAGE_SIZE);
+  await refreshRedbotBets();
+});
+
+redbotActivityNextEl.addEventListener('click', async () => {
+  if (redbotActivityOffset + REDBOT_ACTIVITY_PAGE_SIZE >= redbotActivityTotal) return;
+  redbotActivityOffset += REDBOT_ACTIVITY_PAGE_SIZE;
+  await refreshRedbotBets();
+});
+
+redbotActivityLastEl.addEventListener('click', async () => {
+  const lastPageIndex = Math.max(0, Math.ceil(redbotActivityTotal / REDBOT_ACTIVITY_PAGE_SIZE) - 1);
+  redbotActivityOffset = lastPageIndex * REDBOT_ACTIVITY_PAGE_SIZE;
+  await refreshRedbotBets();
+});
+
 window.addEventListener('error', (event) =>
   logRenderer('error', 'window', 'Unhandled renderer error', {
     message: event.message,
@@ -636,6 +1261,7 @@ window.electronAPI?.onBackfillProgress((progress) => {
 async function saveAutomationSettings() {
   await window.electronAPI.saveAutomationSettings(automation);
   setAutomationStatus();
+  setRedbotAutomationStatus();
 }
 
 function openScriptDialog(script?: AutomationScript) {
@@ -646,6 +1272,16 @@ function openScriptDialog(script?: AutomationScript) {
   setScriptResult('');
   scriptDialogEl.showModal();
   scriptNameEl.focus();
+}
+
+function openRedbotScriptDialog(script?: AutomationScript) {
+  editingRedbotScriptId = script?.id ?? null;
+  redbotScriptDialogTitleEl.textContent = script ? 'Edit Redbot script' : 'Add Redbot script';
+  redbotScriptNameEl.value = script?.name ?? '';
+  redbotScriptCodeEl.value = script?.code ?? '';
+  setRedbotScriptResult('');
+  redbotScriptDialogEl.showModal();
+  redbotScriptNameEl.focus();
 }
 
 function createHeroIcon(pathData: string) {
@@ -672,11 +1308,18 @@ function addButtonIcon(button: HTMLButtonElement, pathData: string) {
 }
 
 addButtonIcon(addScriptEl, 'M12 4.5v15m7.5-7.5h-15');
+addButtonIcon(addRedbotScriptEl, 'M12 4.5v15m7.5-7.5h-15');
 addButtonIcon(copyPromptEl, 'M15.75 17.25v3.375c0 .621-.504 1.125-1.125 1.125h-9.75a1.125 1.125 0 0 1-1.125-1.125V10.875c0-.621.504-1.125 1.125-1.125H8.25m7.5 7.5h3.375c.621 0 1.125-.504 1.125-1.125V6.375c0-.621-.504-1.125-1.125-1.125h-9.75c-.621 0-1.125.504-1.125 1.125V9.75m7.5 7.5h-6.375A1.125 1.125 0 0 1 8.25 16.125V9.75');
+addButtonIcon(copyRedbotPromptEl, 'M15.75 17.25v3.375c0 .621-.504 1.125-1.125 1.125h-9.75a1.125 1.125 0 0 1-1.125-1.125V10.875c0-.621.504-1.125 1.125-1.125H8.25m7.5 7.5h3.375c.621 0 1.125-.504 1.125-1.125V6.375c0-.621-.504-1.125-1.125-1.125h-9.75c-.621 0-1.125.504-1.125 1.125V9.75m7.5 7.5h-6.375A1.125 1.125 0 0 1 8.25 16.125V9.75');
 addButtonIcon(closeScriptDialogEl, 'M6 18 18 6M6 6l12 12');
+addButtonIcon(closeRedbotScriptDialogEl, 'M6 18 18 6M6 6l12 12');
 addButtonIcon(refreshLogsEl, 'M16.023 9.348h4.992V4.356m-1.291 9.768a8.25 8.25 0 1 1-2.23-8.362L21.015 9.348');
 addButtonIcon(copyLogsEl, 'M15.75 17.25v3.375c0 .621-.504 1.125-1.125 1.125h-9.75a1.125 1.125 0 0 1-1.125-1.125V10.875c0-.621.504-1.125 1.125-1.125H8.25m7.5 7.5h3.375c.621 0 1.125-.504 1.125-1.125V6.375c0-.621-.504-1.125-1.125-1.125h-9.75c-.621 0-1.125.504-1.125 1.125V9.75m7.5 7.5h-6.375A1.125 1.125 0 0 1 8.25 16.125V9.75');
 addButtonIcon(openLogFolderEl, 'M2.25 12.75V12A2.25 2.25 0 0 1 4.5 9.75h15A2.25 2.25 0 0 1 21.75 12v.75m-8.69-6.44-2.12-2.12a1.5 1.5 0 0 0-1.061-.44H4.5A2.25 2.25 0 0 0 2.25 6v12a2.25 2.25 0 0 0 2.25 2.25h15A2.25 2.25 0 0 0 21.75 18v-5.25a2.25 2.25 0 0 0-2.25-2.25H4.5a2.25 2.25 0 0 0-2.25 2.25Z');
+addButtonIcon(redbotActivityFirstEl, 'm18.75 4.5-7.5 7.5 7.5 7.5M11.25 4.5 3.75 12l7.5 7.5');
+addButtonIcon(redbotActivityPreviousEl, 'm15.75 19.5-7.5-7.5 7.5-7.5');
+addButtonIcon(redbotActivityNextEl, 'm8.25 4.5 7.5 7.5-7.5 7.5');
+addButtonIcon(redbotActivityLastEl, 'm5.25 4.5 7.5 7.5-7.5 7.5m7.5-15 7.5 7.5-7.5 7.5');
 
 function renderAutomationScripts() {
   setAutomationStatus();
@@ -748,6 +1391,155 @@ function renderAutomationScripts() {
   }));
 }
 
+function renderRedbotScripts() {
+  setRedbotAutomationStatus();
+  if (automation.redbotScripts.length === 0) {
+    const row = document.createElement('tr');
+    const cell = document.createElement('td');
+    cell.colSpan = 4;
+    cell.className = 'script-empty';
+    cell.textContent = 'No Redbot scripts yet. Add a strategy, then enable it when Redbot is ready.';
+    row.append(cell);
+    redbotScriptsEl.replaceChildren(row);
+    return;
+  }
+
+  redbotScriptsEl.replaceChildren(...automation.redbotScripts.map((script) => {
+    const row = document.createElement('tr');
+    const name = document.createElement('td');
+    const result = document.createElement('td');
+    const enabled = document.createElement('td');
+    const actions = document.createElement('td');
+    const toggleLabel = document.createElement('label');
+    const toggle = document.createElement('input');
+    const toggleTrack = document.createElement('span');
+    const toggleText = document.createElement('span');
+    const edit = document.createElement('button');
+    const remove = document.createElement('button');
+    const lastRun = redbotScriptRunResults.get(script.id);
+
+    name.textContent = script.name;
+    name.className = 'script-name';
+    result.textContent = lastRun?.message ?? 'Not run yet';
+    result.className = `script-run-result${lastRun?.error ? ' error' : ''}`;
+    toggle.type = 'checkbox';
+    toggle.checked = script.enabled;
+    toggle.dataset.redbotScriptId = script.id;
+    toggle.setAttribute('role', 'switch');
+    toggle.setAttribute('aria-label', `${script.enabled ? 'Disable' : 'Enable'} ${script.name}`);
+    toggleLabel.className = 'script-toggle';
+    toggleTrack.className = 'script-toggle-track';
+    toggleTrack.setAttribute('aria-hidden', 'true');
+    toggleText.className = 'script-toggle-text';
+    toggleText.textContent = script.enabled ? 'On' : 'Off';
+    toggleLabel.append(toggle, toggleTrack, toggleText);
+    enabled.append(toggleLabel);
+
+    edit.type = 'button';
+    edit.className = 'secondary compact with-icon';
+    edit.append(
+      createHeroIcon(
+        'm16.862 4.487 1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L10.582 16.07a4.5 4.5 0 0 1-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 0 1 1.13-1.897l8.932-8.931Zm0 0L19.5 7.125M18 14.25v4.875A2.625 2.625 0 0 1 15.375 21H5.625A2.625 2.625 0 0 1 3 18.375V8.625A2.625 2.625 0 0 1 5.625 6h4.875',
+      ),
+      document.createTextNode('Edit'),
+    );
+    edit.dataset.redbotAction = 'edit';
+    edit.dataset.redbotScriptId = script.id;
+
+    remove.type = 'button';
+    remove.className = 'destructive compact';
+    remove.append(
+      createHeroIcon(
+        'm14.74 9-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673A2.25 2.25 0 0 1 15.92 21H8.08a2.25 2.25 0 0 1-2.24-2.077L4.772 5.79m14.456 0a48.108 48.108 0 0 0-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 0 1 3.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 0 0-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 0 0-7.5 0',
+      ),
+      document.createTextNode('Delete'),
+    );
+    remove.dataset.redbotAction = 'delete';
+    remove.dataset.redbotScriptId = script.id;
+    actions.className = 'script-actions';
+    actions.append(edit, remove);
+    row.append(name, result, enabled, actions);
+    return row;
+  }));
+}
+
+async function refreshRedbotBets() {
+  const page = await window.electronAPI.getRedbotBets(
+    redbotActivityOffset,
+    REDBOT_ACTIVITY_PAGE_SIZE,
+  );
+  renderRedbotBets(page);
+}
+
+function renderRedbotBets(page: RedbotBetPage) {
+  redbotActivityTotal = page.total;
+  if (page.balanceBits == null) {
+    redbotBalanceEl.textContent = 'Not captured yet';
+    const command = document.createElement('code');
+    command.textContent = '$bal';
+    redbotBalanceUpdatedEl.replaceChildren('Send ', command, ' in the Redbot chat to capture it.');
+  } else {
+    redbotBalanceEl.textContent = `${page.balanceBits.toLocaleString(undefined, {
+      maximumFractionDigits: 8,
+    })} bits`;
+    redbotBalanceUpdatedEl.textContent = page.balanceUpdatedAt
+      ? `Verified ${new Date(page.balanceUpdatedAt).toLocaleString()} · updated from confirmed results`
+      : 'Updated from confirmed Redbot results';
+  }
+
+  const totalPages = Math.max(1, Math.ceil(page.total / REDBOT_ACTIVITY_PAGE_SIZE));
+  const currentPage = Math.min(totalPages, Math.floor(redbotActivityOffset / REDBOT_ACTIVITY_PAGE_SIZE) + 1);
+  redbotActivityPageEl.textContent = `Page ${currentPage} of ${totalPages}`;
+  const firstPage = redbotActivityOffset === 0;
+  const lastPage = redbotActivityOffset + REDBOT_ACTIVITY_PAGE_SIZE >= page.total;
+  redbotActivityFirstEl.disabled = firstPage;
+  redbotActivityPreviousEl.disabled = firstPage;
+  redbotActivityNextEl.disabled = lastPage;
+  redbotActivityLastEl.disabled = lastPage;
+
+  if (page.items.length === 0) {
+    const row = document.createElement('tr');
+    const cell = document.createElement('td');
+    cell.colSpan = 4;
+    cell.className = 'script-empty';
+    cell.textContent = 'No completed Redbot bets captured yet.';
+    row.append(cell);
+    redbotActivityEl.replaceChildren(row);
+    return;
+  }
+
+  const labels: Record<RedbotBetRecord['outcome'], string> = {
+    won: 'Bet won',
+    lost: 'Bet lost',
+  };
+  redbotActivityEl.replaceChildren(...page.items.map((bet) => {
+    const row = document.createElement('tr');
+    const outcome = document.createElement('td');
+    const details = document.createElement('td');
+    const amount = document.createElement('td');
+    const balance = document.createElement('td');
+
+    outcome.textContent = labels[bet.outcome];
+    outcome.className = `activity-kind ${bet.outcome}`;
+    const detailText = `${bet.scriptName} · after round ${bet.triggerRoundId.toLocaleString()} · ${bet.details}`;
+    details.textContent = detailText;
+    details.title = detailText;
+    details.className = 'activity-details';
+    amount.textContent = `${bet.netBits >= 0 ? '+' : '−'}${Math.abs(bet.netBits).toLocaleString(undefined, {
+      maximumFractionDigits: 8,
+    })} bits`;
+    amount.className = `activity-amount ${bet.outcome}`;
+    balance.textContent = bet.balanceAfterBits == null
+      ? '—'
+      : `${bet.balanceAfterBits.toLocaleString(undefined, {
+          maximumFractionDigits: 8,
+        })} bits`;
+    balance.className = 'activity-amount';
+    row.append(outcome, details, amount, balance);
+    return row;
+  }));
+}
+
 async function addGame(data: GameData) {
   if (!data.hash || data.id == null || data.bust == null) {
     logRenderer('warn', 'games', 'Incomplete round ignored', {
@@ -774,7 +1566,73 @@ async function addGame(data: GameData) {
     roundsVisible: Math.min(games.length, MAX_VISIBLE_GAMES),
   });
   const enabledScripts = automation.scripts.filter((script) => script.enabled);
-  await Promise.all(enabledScripts.map((script) => runAutomation(script, storedGame)));
+  const enabledRedbotScripts = automation.redbotScripts.filter((script) => script.enabled);
+  await Promise.all([
+    Promise.all(enabledScripts.map((script) => runAutomation(script, storedGame))),
+    runRedbotAutomations(enabledRedbotScripts, storedGame),
+  ]);
+}
+
+async function runRedbotAutomations(scripts: AutomationScript[], round: StoredGame) {
+  if (scripts.length > 0 && !redbotBalanceVerifiedAt) {
+    try {
+      await verifyRedbotBalance();
+    } catch (error) {
+      for (const script of scripts) {
+        redbotScriptRunResults.set(script.id, {
+          message: `Round ${round.id}: balance check failed`,
+          error: true,
+        });
+      }
+      renderRedbotScripts();
+      logRenderer('error', 'redbot', 'Redbot scripts skipped because balance verification failed', {
+        roundId: round.id,
+        error: errorDetails(error),
+      });
+      return;
+    }
+  }
+  for (const script of scripts) await runRedbotAutomation(script, round);
+}
+
+async function runRedbotAutomation(script: AutomationScript, round: StoredGame) {
+  try {
+    const execute = new RedbotAsyncFunction(
+      'round',
+      'recentRounds',
+      'redbot',
+      'getHistory',
+      script.code,
+    );
+    await execute(
+      round,
+      games.map((game) => ({ ...game })),
+      createRedbotApi(round, script),
+      window.electronAPI.getGameHistory,
+    );
+    redbotScriptRunResults.set(script.id, {
+      message: `Succeeded for round ${round.id}`,
+      error: false,
+    });
+    logRenderer('info', 'redbot', 'Redbot round script completed', {
+      roundId: round.id,
+      scriptId: script.id,
+      scriptName: script.name,
+    });
+  } catch (error) {
+    redbotScriptRunResults.set(script.id, {
+      message: `Round ${round.id}: ${getErrorMessage(error)}`,
+      error: true,
+    });
+    logRenderer('error', 'redbot', 'Redbot round script failed', {
+      roundId: round.id,
+      scriptId: script.id,
+      scriptName: script.name,
+      error: errorDetails(error),
+    });
+  } finally {
+    renderRedbotScripts();
+  }
 }
 
 async function runAutomation(script: AutomationScript, round: StoredGame) {

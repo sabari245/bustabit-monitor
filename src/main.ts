@@ -9,6 +9,7 @@ import {
   shell,
 } from 'electron';
 import fs from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import started from 'electron-squirrel-startup';
@@ -16,6 +17,11 @@ import type {
   AutomationScript,
   AutomationSettings,
   GameData,
+  RedbotActivity,
+  RedbotAutomationCommand,
+  RedbotBetPage,
+  RedbotBetRecord,
+  RedbotChatMessage,
   StoredGame,
   TelegramResult,
 } from './types';
@@ -73,11 +79,97 @@ const DEFAULT_AUTOMATION_SCRIPTS: AutomationScript[] = [
     enabled: false,
   },
 ];
+const DEFAULT_REDBOT_SCRIPTS: AutomationScript[] = [
+  {
+    id: 'default-redbot-flat-bet',
+    name: 'Flat bet · 1 bit',
+    code: [
+      '// Demo: wager the same small amount after every completed round.',
+      'const betBits = 1;',
+      'await redbot.bet(betBits);',
+    ].join('\n'),
+    enabled: false,
+  },
+  {
+    id: 'default-redbot-capped-martingale',
+    name: 'Capped Martingale · 1–16 bits',
+    code: [
+      '// Demo: double after each consecutive 1.98x+ result, then stop after five losses.',
+      '// Because progression is derived from history, enabling during a losing streak',
+      '// starts at that streak\'s current level. Review the calculated cap before enabling.',
+      'const baseBet = 1;',
+      'const maxDoublings = 4;',
+      'let consecutiveLosses = 0;',
+      '',
+      'for (const game of recentRounds) {',
+      '  if (game.bust < 1.98) break;',
+      '  consecutiveLosses += 1;',
+      '}',
+      '',
+      'if (consecutiveLosses <= maxDoublings) {',
+      '  const betBits = baseBet * (2 ** consecutiveLosses);',
+      '  await redbot.bet(betBits);',
+      '}',
+    ].join('\n'),
+    enabled: false,
+  },
+  {
+    id: 'default-redbot-five-red-entry',
+    name: 'Five-red streak · 1 bit',
+    code: [
+      '// Demo: place one flat bet only after five consecutive results below 1.98x.',
+      'const streak = recentRounds.slice(0, 5);',
+      'if (streak.length === 5 && streak.every((game) => game.bust < 1.98)) {',
+      '  await redbot.bet(1);',
+      '}',
+    ].join('\n'),
+    enabled: false,
+  },
+];
 let recentGames: StoredGame[] = [];
 let dataDirectory = '';
 let historyPath = '';
 let recentPath = '';
 let settingsPath = '';
+let redbotActivityPath = '';
+let redbotAutomationBetsPath = '';
+let redbotActivities: RedbotActivity[] = [];
+let redbotBets: RedbotBetRecord[] = [];
+const redbotActivitySourceKeys = new Set<string>();
+let redbotBalanceBits: number | null = null;
+let redbotBalanceUpdatedAt: string | null = null;
+
+type TrackedRedbotBet = {
+  id: string;
+  scriptId: string;
+  scriptName: string;
+  triggerRoundId: number;
+  command: string;
+  target: string;
+  expectedWagerBits: number | null;
+  wagerBits: number | null;
+  status: 'dispatched' | 'accepted' | 'won' | 'lost';
+  confirmation: string | null;
+  result: string | null;
+  netBits: number | null;
+  balanceAfterBits: number | null;
+  createdAt: string;
+};
+
+type RedbotOutcomeQueueEntry = {
+  trackedBetId: string | null;
+  wagerBits: number;
+};
+
+type RedbotAutomationBetState = {
+  bets: TrackedRedbotBet[];
+  outcomeQueue: RedbotOutcomeQueueEntry[];
+  balanceBits: number | null;
+  balanceUpdatedAt: string | null;
+};
+
+let trackedRedbotBets: TrackedRedbotBet[] = [];
+let redbotOutcomeQueue: RedbotOutcomeQueueEntry[] = [];
 
 const webviewPreloadPath = pathToFileURL(
   path.join(__dirname, 'webview-preload.js'),
@@ -111,6 +203,8 @@ function initializeStorage() {
   historyPath = path.join(dataDirectory, 'rounds.jsonl');
   recentPath = path.join(dataDirectory, 'recent-rounds.json');
   settingsPath = path.join(dataDirectory, 'automation.json');
+  redbotActivityPath = path.join(dataDirectory, 'redbot-activity.jsonl');
+  redbotAutomationBetsPath = path.join(dataDirectory, 'redbot-automation-bets.json');
   fs.mkdirSync(dataDirectory, { recursive: true });
   if (historyStartsAtClassicFloor()) {
     recentGames = readHistoryPage(0, MAX_RECENT_GAMES);
@@ -119,10 +213,14 @@ function initializeStorage() {
     log('warn', 'storage', 'Complete classic history is unavailable; rebuilding from live data');
     recentGames = [];
   }
+  loadRedbotActivity();
+  loadRedbotAutomationBets();
   log('info', 'storage', 'Storage initialized', {
     dataDirectory,
     historyPath,
     recentRoundsLoaded: recentGames.length,
+    redbotActivityCount: redbotActivities.length,
+    redbotAutomationBetCount: redbotBets.length,
   });
 }
 
@@ -333,10 +431,341 @@ function getAutomationSettings(): AutomationSettings {
           ...DEFAULT_AUTOMATION_SCRIPTS.map((script) => ({ ...script })),
         ]
       : DEFAULT_AUTOMATION_SCRIPTS.map((script) => ({ ...script }));
+  const storedRedbotScripts = Array.isArray(settings.redbotScripts)
+    ? settings.redbotScripts.filter(
+        (script) =>
+          script &&
+          typeof script.id === 'string' &&
+          typeof script.name === 'string' &&
+          typeof script.code === 'string' &&
+          typeof script.enabled === 'boolean',
+      )
+    : [];
+  const redbotDefaultsVersion = typeof settings.redbotDefaultsVersion === 'number'
+    ? settings.redbotDefaultsVersion
+    : 0;
+  const redbotScripts = redbotDefaultsVersion >= 1
+    ? storedRedbotScripts
+    : [
+        ...storedRedbotScripts,
+        ...DEFAULT_REDBOT_SCRIPTS
+          .filter((script) => !storedRedbotScripts.some((stored) => stored.id === script.id))
+          .map((script) => ({ ...script })),
+      ];
   return {
     botToken: typeof settings.botToken === 'string' ? settings.botToken : '',
     chatId: typeof settings.chatId === 'string' ? settings.chatId : '',
     scripts,
+    redbotScripts,
+    redbotDefaultsVersion: 1,
+  };
+}
+
+function loadRedbotActivity() {
+  redbotActivities = [];
+  redbotBets = [];
+  redbotActivitySourceKeys.clear();
+  redbotBalanceBits = null;
+  redbotBalanceUpdatedAt = null;
+  if (!fs.existsSync(redbotActivityPath)) return;
+
+  const lines = fs.readFileSync(redbotActivityPath, 'utf8').split('\n');
+  for (const line of lines) {
+    if (!line) continue;
+    try {
+      const activity = JSON.parse(line) as RedbotActivity;
+      if (
+        !activity ||
+        typeof activity.id !== 'string' ||
+        typeof activity.sourceKey !== 'string' ||
+        !['balance', 'bet', 'win', 'loss'].includes(activity.kind) ||
+        typeof activity.message !== 'string' ||
+        typeof activity.recordedAt !== 'string'
+      ) {
+        continue;
+      }
+      redbotActivities.push(activity);
+      redbotActivitySourceKeys.add(activity.sourceKey);
+      if (activity.kind === 'balance' && activity.balanceBits != null) {
+        redbotBalanceBits = activity.balanceBits;
+        redbotBalanceUpdatedAt = activity.recordedAt;
+      }
+    } catch (error) {
+      log('warn', 'redbot', 'Ignored an invalid Redbot activity line', {
+        error: getErrorMessage(error),
+      });
+    }
+  }
+  redbotActivities.reverse();
+}
+
+function refreshPublicRedbotBets() {
+  redbotBets = trackedRedbotBets
+    .filter((bet) => bet.status === 'won' || bet.status === 'lost')
+    .map((bet) => ({
+      id: bet.id,
+      outcome: bet.status as RedbotBetRecord['outcome'],
+      scriptName: bet.scriptName,
+      triggerRoundId: bet.triggerRoundId,
+      details: [bet.target, bet.result].filter(Boolean).join(' · '),
+      wagerBits: bet.wagerBits ?? 0,
+      netBits: bet.netBits ?? 0,
+      balanceAfterBits: bet.balanceAfterBits,
+    }))
+    .reverse();
+}
+
+function loadRedbotAutomationBets() {
+  const state = readJson<Partial<RedbotAutomationBetState>>(redbotAutomationBetsPath, {});
+  trackedRedbotBets = Array.isArray(state.bets)
+    ? state.bets.filter(
+        (bet) =>
+          bet &&
+          typeof bet.id === 'string' &&
+          typeof bet.scriptId === 'string' &&
+          typeof bet.scriptName === 'string' &&
+          typeof bet.triggerRoundId === 'number' &&
+          typeof bet.command === 'string' &&
+          typeof bet.target === 'string' &&
+          ['dispatched', 'accepted', 'won', 'lost'].includes(bet.status),
+      )
+    : [];
+  redbotOutcomeQueue = Array.isArray(state.outcomeQueue)
+    ? state.outcomeQueue.filter(
+        (entry) =>
+          entry &&
+          (entry.trackedBetId === null || typeof entry.trackedBetId === 'string') &&
+          typeof entry.wagerBits === 'number' &&
+          Number.isFinite(entry.wagerBits),
+      )
+    : [];
+  if (typeof state.balanceBits === 'number' && Number.isFinite(state.balanceBits)) {
+    redbotBalanceBits = state.balanceBits;
+  }
+  if (typeof state.balanceUpdatedAt === 'string') {
+    redbotBalanceUpdatedAt = state.balanceUpdatedAt;
+  }
+  refreshPublicRedbotBets();
+}
+
+function saveRedbotAutomationBets() {
+  const state: RedbotAutomationBetState = {
+    bets: trackedRedbotBets,
+    outcomeQueue: redbotOutcomeQueue,
+    balanceBits: redbotBalanceBits,
+    balanceUpdatedAt: redbotBalanceUpdatedAt,
+  };
+  writeJson(redbotAutomationBetsPath, state);
+}
+
+function parseAutomationWager(command: string) {
+  const normalized = command.trim().replace(/\s+/g, ' ');
+  const match = normalized.match(/^\$(bet|o|one|lo|low|ut|safe)\s+(max|\d+(?:\.\d+)?)$/i);
+  if (!match) return null;
+  const commandName = match[1].toLowerCase();
+  const targets: Record<string, string> = {
+    bet: 'Next game being red',
+    o: 'Next game under 1.01x',
+    one: 'Next game under 1.01x',
+    lo: 'Next game under 1.2x',
+    low: 'Next game under 1.2x',
+    ut: 'Next game under 10x',
+    safe: 'Next game under 28x',
+  };
+  return {
+    target: targets[commandName],
+    expectedWagerBits: match[2].toLowerCase() === 'max' ? null : parseBits(match[2]),
+  };
+}
+
+function trackRedbotAutomationCommand(input: RedbotAutomationCommand) {
+  if (
+    !input ||
+    typeof input.scriptId !== 'string' ||
+    typeof input.scriptName !== 'string' ||
+    !Number.isSafeInteger(input.triggerRoundId) ||
+    typeof input.command !== 'string'
+  ) {
+    throw new Error('Invalid Redbot automation command metadata');
+  }
+  const wager = parseAutomationWager(input.command);
+  if (!wager) return;
+  trackedRedbotBets.push({
+    id: randomUUID(),
+    scriptId: input.scriptId,
+    scriptName: input.scriptName.slice(0, 80),
+    triggerRoundId: input.triggerRoundId,
+    command: input.command,
+    target: wager.target,
+    expectedWagerBits: wager.expectedWagerBits,
+    wagerBits: null,
+    status: 'dispatched',
+    confirmation: null,
+    result: null,
+    netBits: null,
+    balanceAfterBits: null,
+    createdAt: new Date().toISOString(),
+  });
+  saveRedbotAutomationBets();
+}
+
+function targetFromConfirmation(message: string) {
+  const lower = message.toLowerCase();
+  if (lower.includes('under 1.01x')) return 'Next game under 1.01x';
+  if (lower.includes('under 1.2x')) return 'Next game under 1.2x';
+  if (lower.includes('under 10x')) return 'Next game under 10x';
+  if (lower.includes('under 28x')) return 'Next game under 28x';
+  if (lower.includes('being red')) return 'Next game being red';
+  return null;
+}
+
+function applyRedbotActivity(activity: RedbotActivity) {
+  if (activity.kind === 'balance' && activity.balanceBits != null) {
+    redbotBalanceBits = activity.balanceBits;
+    redbotBalanceUpdatedAt = activity.recordedAt;
+    return;
+  }
+  if (activity.kind === 'bet' && activity.amountBits != null) {
+    const target = targetFromConfirmation(activity.message);
+    const trackedBet = trackedRedbotBets.find(
+      (bet) =>
+        bet.status === 'dispatched' &&
+        bet.target === target &&
+        (bet.expectedWagerBits == null || bet.expectedWagerBits === activity.amountBits),
+    );
+    if (trackedBet) {
+      trackedBet.status = 'accepted';
+      trackedBet.wagerBits = activity.amountBits;
+      trackedBet.confirmation = activity.message;
+    }
+    redbotOutcomeQueue.push({
+      trackedBetId: trackedBet?.id ?? null,
+      wagerBits: activity.amountBits,
+    });
+    return;
+  }
+  if ((activity.kind !== 'win' && activity.kind !== 'loss') || activity.amountBits == null) return;
+
+  const pendingOutcome = redbotOutcomeQueue.shift();
+  if (!pendingOutcome) return;
+  const won = activity.kind === 'win';
+  const netBits = won
+    ? Math.round((activity.amountBits - pendingOutcome.wagerBits) * 1e8) / 1e8
+    : -activity.amountBits;
+  if (won && netBits < 0) {
+    log('warn', 'redbot', 'Ignored an implausible winning result', {
+      trackedBetId: pendingOutcome.trackedBetId,
+      wagerBits: pendingOutcome.wagerBits,
+      reportedWinBits: activity.amountBits,
+    });
+    return;
+  }
+  if (redbotBalanceBits != null) {
+    redbotBalanceBits = Math.round((redbotBalanceBits + netBits) * 1e8) / 1e8;
+  }
+  if (!pendingOutcome.trackedBetId) return;
+  const trackedBet = trackedRedbotBets.find((bet) => bet.id === pendingOutcome.trackedBetId);
+  if (!trackedBet || trackedBet.status !== 'accepted') return;
+  trackedBet.status = won ? 'won' : 'lost';
+  trackedBet.result = activity.message
+    .replace(/\s*You (?:won|lost) [\d,.]+ bits?!?\.?$/i, '')
+    .replace(/[.!]+$/, '');
+  trackedBet.netBits = netBits;
+  trackedBet.balanceAfterBits = redbotBalanceBits;
+}
+
+function parseBits(value: string) {
+  const bits = Number(value.replace(/,/g, ''));
+  return Number.isFinite(bits) && bits >= 0 ? bits : null;
+}
+
+function parseRedbotChatMessage(input: RedbotChatMessage): RedbotActivity | null {
+  const message = input.message.trim().replace(/\s+/g, ' ');
+  let kind: RedbotActivity['kind'];
+  let amountBits: number | null = null;
+  let balanceBits: number | null = null;
+  let match = message.match(/^Your balance is ([\d,.]+) bits?\.?$/i);
+
+  if (match) {
+    kind = 'balance';
+    balanceBits = parseBits(match[1]);
+    if (balanceBits == null) return null;
+  } else {
+    match = message.match(/^You have bet ([\d,.]+) bits?\b/i);
+    if (match) {
+      kind = 'bet';
+      amountBits = parseBits(match[1]);
+    } else {
+      match = message.match(/^The game was .+?\. You won ([\d,.]+) bits?!?$/i);
+      if (match) {
+        kind = 'win';
+        amountBits = parseBits(match[1]);
+      } else {
+        match = message.match(/^The game was .+?\. You lost ([\d,.]+) bits?\.?$/i);
+        if (!match) return null;
+        kind = 'loss';
+        amountBits = parseBits(match[1]);
+      }
+    }
+    if (amountBits == null) return null;
+  }
+
+  return {
+    id: randomUUID(),
+    sourceKey: input.sourceKey,
+    kind,
+    message,
+    amountBits,
+    balanceBits,
+    chatTime: typeof input.chatTime === 'string' ? input.chatTime.slice(0, 20) : null,
+    recordedAt: new Date().toISOString(),
+  };
+}
+
+function storeRedbotChatMessages(messages: RedbotChatMessage[]) {
+  let stored = 0;
+  for (const input of messages.slice(0, 200)) {
+    if (
+      !input ||
+      typeof input.sourceKey !== 'string' ||
+      !input.sourceKey ||
+      input.sourceKey.length > 600 ||
+      typeof input.message !== 'string' ||
+      input.message.length > 500 ||
+      redbotActivitySourceKeys.has(input.sourceKey)
+    ) {
+      continue;
+    }
+    const activity = parseRedbotChatMessage(input);
+    if (!activity) continue;
+
+    fs.appendFileSync(redbotActivityPath, `${JSON.stringify(activity)}\n`);
+    redbotActivities.unshift(activity);
+    redbotActivitySourceKeys.add(activity.sourceKey);
+    applyRedbotActivity(activity);
+    stored += 1;
+  }
+  if (stored > 0) {
+    refreshPublicRedbotBets();
+    saveRedbotAutomationBets();
+  }
+  if (stored > 0) log('info', 'redbot', 'Redbot chat activity stored', {
+    stored,
+    total: redbotActivities.length,
+    completedBets: redbotBets.length,
+    balanceBits: redbotBalanceBits,
+  });
+  return stored;
+}
+
+function getRedbotBets(offset: number, limit: number): RedbotBetPage {
+  const safeOffset = Math.max(0, Math.floor(offset) || 0);
+  const safeLimit = Math.min(100, Math.max(1, Math.floor(limit) || 10));
+  return {
+    items: redbotBets.slice(safeOffset, safeOffset + safeLimit),
+    total: redbotBets.length,
+    balanceBits: redbotBalanceBits,
+    balanceUpdatedAt: redbotBalanceUpdatedAt,
   };
 }
 
@@ -443,6 +872,25 @@ function registerIpcHandlers() {
       throw new Error(`Storage error: ${getErrorMessage(error)}`);
     }
   });
+  ipcMain.handle('redbot:activity:get', (_event, offset = 0, limit = 10) =>
+    getRedbotBets(Number(offset), Number(limit)),
+  );
+  ipcMain.handle('redbot:activity:store', (_event, messages: RedbotChatMessage[]) => {
+    try {
+      return storeRedbotChatMessages(Array.isArray(messages) ? messages : []);
+    } catch (error) {
+      log('error', 'redbot', 'Could not store Redbot chat activity', error);
+      throw new Error(`Could not store Redbot activity: ${getErrorMessage(error)}`);
+    }
+  });
+  ipcMain.handle('redbot:command:track', (_event, command: RedbotAutomationCommand) => {
+    try {
+      trackRedbotAutomationCommand(command);
+    } catch (error) {
+      log('error', 'redbot', 'Could not track Redbot automation command', error);
+      throw new Error(`Could not track Redbot command: ${getErrorMessage(error)}`);
+    }
+  });
   ipcMain.handle('automation:get', getAutomationSettings);
   ipcMain.handle(
     'automation:save',
@@ -452,6 +900,8 @@ function registerIpcHandlers() {
         log('info', 'automation', 'Automation settings saved', {
           scriptCount: settings.scripts.length,
           enabledScriptCount: settings.scripts.filter((script) => script.enabled).length,
+          redbotScriptCount: settings.redbotScripts.length,
+          enabledRedbotScriptCount: settings.redbotScripts.filter((script) => script.enabled).length,
           hasBotToken: Boolean(settings.botToken),
           hasChatId: Boolean(settings.chatId),
         });
