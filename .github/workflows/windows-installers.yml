@@ -83,6 +83,7 @@ jobs:
       - name: Publish tagged release
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         shell: bash
         run: |
           shopt -s globstar nullglob
