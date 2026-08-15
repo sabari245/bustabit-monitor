@@ -116,6 +116,20 @@
           </div>
         </form>
       </dialog>
+      <section class="automation-explorer-panel">
+        <div class="section-heading">
+          <div>
+            <h2>Automation explorer</h2>
+            <p>Checks whether a Redbot chat tab is open in the Bustabit webview.</p>
+          </div>
+          <span id="explorer-status" class="automation-status">Waiting…</span>
+        </div>
+        <div class="explorer-value">
+          <span class="explorer-label">Redbot tab</span>
+          <code id="explorer-value" class="explorer-value-text">Waiting for the webview…</code>
+          <span class="explorer-xpath">localStorage active_channel = @Redbot · input[name="message-input"]</span>
+        </div>
+      </section>
       <section class="webview-panel">
         <div class="section-heading">
           <div>

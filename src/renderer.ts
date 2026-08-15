@@ -9,6 +9,7 @@ import type {
 } from './types';
 
 const BUSTABIT_URL = 'https://bustabit.com/play';
+const REDBOT_CHANNEL = '@Redbot';
 const MAX_GAMES_IN_MEMORY = 100;
 const MAX_VISIBLE_GAMES = 10;
 const DEVELOPER_MODE_KEY = 'bustabit-monitor:developer-mode';
@@ -22,6 +23,8 @@ const AsyncFunction = Object.getPrototypeOf(async () => undefined).constructor a
 ) => Promise<unknown>;
 
 const webview = document.getElementById('game-webview') as Electron.WebviewTag;
+const explorerStatusEl = document.getElementById('explorer-status') as HTMLSpanElement;
+const explorerValueEl = document.getElementById('explorer-value') as HTMLElement;
 const gamesEl = document.getElementById('games') as HTMLTableSectionElement;
 const statusEl = document.getElementById('status') as HTMLParagraphElement;
 const developerModeEl = document.getElementById(
@@ -62,6 +65,7 @@ let automation: AutomationSettings = {
 let roundQueue = Promise.resolve();
 let displayedLogs = '';
 let developerMode = localStorage.getItem(DEVELOPER_MODE_KEY) === 'true';
+let webviewReady = false;
 let editingScriptId: string | null = null;
 const scriptRunResults = new Map<string, { message: string; error: boolean }>();
 
@@ -197,6 +201,110 @@ function getWebviewPreloadPath(): string | null {
   return new URLSearchParams(window.location.search).get('webviewPreload');
 }
 
+type RedbotChatProbe = {
+  pageReady: boolean;
+  open: boolean;
+  label: string | null;
+  chatInputReady: boolean;
+};
+
+function probeRedbotChat(): Promise<RedbotChatProbe> {
+  return webview.executeJavaScript(`
+    (function () {
+      var targetChannel = ${JSON.stringify(REDBOT_CHANNEL)};
+
+      function textOf(node) {
+        var text = node.innerText !== undefined ? node.innerText : node.textContent;
+        return text == null ? '' : String(text).trim();
+      }
+
+      function isVisible(node) {
+        if (!node || !node.getBoundingClientRect) return false;
+        var style = window.getComputedStyle(node);
+        if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) === 0) {
+          return false;
+        }
+        var rect = node.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0;
+      }
+
+      function isPageReady() {
+        var root = document.getElementById('root');
+        return Boolean(root && root.children.length > 0);
+      }
+
+      function isRedbotChannel(channel) {
+        return channel.toLowerCase() === targetChannel.toLowerCase();
+      }
+
+      function findRedbotTabLabel() {
+        var buttons = document.querySelectorAll('button');
+        for (var i = 0; i < buttons.length; i++) {
+          var paragraphs = buttons[i].querySelectorAll('p');
+          for (var j = 0; j < paragraphs.length; j++) {
+            if (textOf(paragraphs[j]) === 'Redbot') return 'Redbot';
+          }
+        }
+        return null;
+      }
+
+      function findChatInput() {
+        var input = document.querySelector('input[name="message-input"]');
+        return input && isVisible(input) ? input : null;
+      }
+
+      if (!isPageReady()) {
+        return { pageReady: false, open: false, label: null, chatInputReady: false };
+      }
+
+      var activeChannel = localStorage.getItem('active_channel') || '';
+      var open = isRedbotChannel(activeChannel) || findRedbotTabLabel() != null;
+      return {
+        pageReady: true,
+        open: open,
+        label: open ? 'Redbot' : null,
+        chatInputReady: open && findChatInput() != null,
+      };
+    })();
+  `);
+}
+
+async function refreshExplorerValue() {
+  if (!webviewReady) {
+    explorerValueEl.textContent = 'Waiting for the webview…';
+    explorerValueEl.classList.add('missing');
+    explorerStatusEl.textContent = 'Waiting…';
+    return;
+  }
+
+  try {
+    const probe = await probeRedbotChat();
+    if (!probe.pageReady) {
+      explorerValueEl.textContent = 'Waiting for Bustabit page…';
+      explorerValueEl.classList.add('missing');
+      explorerStatusEl.textContent = 'Loading…';
+      return;
+    }
+
+    const missing = !probe.open;
+    explorerValueEl.textContent = missing
+      ? '(Redbot chat not open)'
+      : probe.chatInputReady
+        ? probe.label ?? 'Redbot'
+        : `${probe.label ?? 'Redbot'} · input missing`;
+    explorerValueEl.classList.toggle('missing', missing);
+    explorerStatusEl.textContent = missing
+      ? 'Closed'
+      : probe.chatInputReady
+        ? 'Ready'
+        : 'Open';
+  } catch (error) {
+    explorerValueEl.textContent = '(unavailable)';
+    explorerValueEl.classList.add('missing');
+    explorerStatusEl.textContent = 'Error';
+  }
+}
+
 async function initialize() {
   setDeveloperMode(developerMode);
   logRenderer('info', 'app', 'Renderer initialization started');
@@ -220,6 +328,11 @@ async function initialize() {
   });
 }
 
+function refreshExplorerWhenInteractive() {
+  if (!webviewReady) return;
+  void refreshExplorerValue();
+}
+
 const initialization = initialize().catch((error) => {
   const message = getErrorMessage(error);
   setStatus(`Could not load local app data: ${message}`);
@@ -232,8 +345,19 @@ if (!webviewPreloadPath) {
   logRenderer('error', 'webview', 'WebView preload path is unavailable');
 } else {
   webview.preload = webviewPreloadPath;
-  webview.src = BUSTABIT_URL;
-  setStatus('Connecting...');
+  try {
+    const currentUrl = webview.getURL();
+    if (!currentUrl || currentUrl === 'about:blank') {
+      webview.src = BUSTABIT_URL;
+      setStatus('Connecting...');
+    } else {
+      webviewReady = true;
+      void refreshExplorerValue();
+    }
+  } catch {
+    webview.src = BUSTABIT_URL;
+    setStatus('Connecting...');
+  }
   logRenderer('info', 'webview', 'WebView configured', {
     url: BUSTABIT_URL,
     hasPreloadPath: true,
@@ -242,6 +366,8 @@ if (!webviewPreloadPath) {
 
 webview.addEventListener('dom-ready', () => {
   logRenderer('info', 'webview', 'WebView DOM is ready');
+  webviewReady = true;
+  void refreshExplorerValue();
   webview
     .executeJavaScript(HASH_POLL_SCRIPT)
     .then(() => {
@@ -259,13 +385,18 @@ webview.addEventListener('did-start-loading', () =>
   logRenderer('debug', 'webview', 'WebView started loading'),
 );
 
-webview.addEventListener('did-stop-loading', () =>
-  logRenderer('info', 'webview', 'WebView stopped loading', { url: webview.getURL() }),
-);
+webview.addEventListener('did-stop-loading', () => {
+  logRenderer('info', 'webview', 'WebView stopped loading', { url: webview.getURL() });
+  refreshExplorerWhenInteractive();
+});
 
-webview.addEventListener('did-navigate', (event) =>
-  logRenderer('info', 'webview', 'WebView navigated', { url: event.url }),
-);
+webview.addEventListener('did-navigate', (event) => {
+  webviewReady = false;
+  explorerStatusEl.textContent = 'Waiting…';
+  logRenderer('info', 'webview', 'WebView navigated', { url: event.url });
+});
+
+if (webviewPreloadPath) refreshExplorerWhenInteractive();
 
 webview.addEventListener('console-message', (event) =>
   logRenderer(event.level >= 3 ? 'error' : event.level === 2 ? 'warn' : 'debug', 'webview-console', event.message, {
@@ -335,6 +466,10 @@ webview.addEventListener('ipc-message', (event) => {
     logRenderer('error', 'games', 'Invalid WebView round payload', errorDetails(error));
   }
 });
+
+setInterval(() => {
+  void refreshExplorerValue();
+}, 1000);
 
 saveCredentialsEl.addEventListener('click', async () => {
   automation = {
