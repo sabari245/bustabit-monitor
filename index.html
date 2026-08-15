@@ -5,7 +5,7 @@
     <meta name="color-scheme" content="dark" />
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' https:; img-src 'self' data: https:; frame-src https:; webview-src https:;"
+      content="default-src 'self'; script-src 'self' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; connect-src 'self' https:; img-src 'self' data: https:; frame-src https:; webview-src https:;"
     />
     <title>Bustabit Monitor</title>
   </head>
@@ -14,9 +14,16 @@
       <header>
         <div>
           <h1>Bustabit Monitor</h1>
-          <p>Completed games update in real time.</p>
+          <p>Completed rounds are saved locally and update in real time.</p>
         </div>
-        <p id="status" class="status">Connecting...</p>
+        <div class="header-actions">
+          <p id="status" class="status">Connecting...</p>
+          <label class="developer-toggle">
+            <span id="developer-mode-label">Developer mode</span>
+            <input id="toggle-developer-mode" type="checkbox" role="switch" />
+            <span class="script-toggle-track" aria-hidden="true"></span>
+          </label>
+        </div>
       </header>
       <section class="table-panel">
         <table>
@@ -35,8 +42,228 @@
           </tbody>
         </table>
       </section>
+      <section class="automation-panel">
+        <div class="section-heading">
+          <div>
+            <h2>Telegram automation</h2>
+            <p>Run multiple independent scripts whenever a completed round arrives.</p>
+          </div>
+          <span id="automation-status" class="automation-status">0 active</span>
+        </div>
+        <details class="credential-settings">
+          <summary>Telegram connection</summary>
+          <div class="credentials">
+            <label>
+              Telegram bot token
+              <input id="bot-token" type="password" autocomplete="off" placeholder="123456789:AA..." />
+            </label>
+            <label>
+              Telegram chat/user ID
+              <input id="chat-id" type="text" autocomplete="off" placeholder="123456789" />
+            </label>
+          </div>
+          <div class="credential-actions">
+            <button id="save-credentials" class="compact" type="button">Save connection</button>
+            <p id="automation-result" aria-live="polite"></p>
+          </div>
+        </details>
+        <div class="script-table-heading">
+          <div>
+            <h3>Round scripts</h3>
+            <p>Every enabled script runs once for each new round.</p>
+          </div>
+          <button id="add-script" class="compact" type="button">Add script</button>
+        </div>
+        <div class="script-table-wrap">
+          <table class="script-table">
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>Last run</th>
+                <th>Enabled</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="automation-scripts"></tbody>
+          </table>
+        </div>
+      </section>
+      <dialog id="script-dialog">
+        <form id="script-form" method="dialog">
+          <div class="dialog-heading">
+            <div>
+              <h2 id="script-dialog-title">Add round script</h2>
+              <p>Name the script and add the JavaScript that should run for each round.</p>
+            </div>
+            <button id="close-script-dialog" class="secondary compact" type="button" aria-label="Close">Close</button>
+          </div>
+          <label>
+            Script name
+            <input id="script-name" type="text" maxlength="80" autocomplete="off" placeholder="High multiplier alert" required />
+          </label>
+          <div class="script-label-row">
+            <label for="script-code">Round script</label>
+            <button id="copy-prompt" class="secondary compact" type="button">Copy chatbot prompt</button>
+          </div>
+          <textarea id="script-code" spellcheck="false" placeholder="if (round.bust >= 10) {&#10;  await sendMessage(`High round: ${round.bust}x`);&#10;}" required></textarea>
+          <p class="script-help">
+            Available: <code>round</code>, <code>recentRounds</code>,
+            <code>await sendMessage(text)</code>, and <code>await getHistory(offset, limit)</code>.
+          </p>
+          <div class="dialog-actions">
+            <p id="script-result" aria-live="polite"></p>
+            <button id="save-script" type="submit">Save script</button>
+          </div>
+        </form>
+      </dialog>
+      <dialog id="redbot-script-dialog">
+        <form id="redbot-script-form" method="dialog">
+          <div class="dialog-heading">
+            <div>
+              <h2 id="redbot-script-dialog-title">Add Redbot script</h2>
+              <p>Name the strategy and add the JavaScript that should run after each round.</p>
+            </div>
+            <button id="close-redbot-script-dialog" class="secondary compact" type="button" aria-label="Close">Close</button>
+          </div>
+          <label>
+            Script name
+            <input id="redbot-script-name" type="text" maxlength="80" autocomplete="off" placeholder="Five-red entry" required />
+          </label>
+          <div class="script-label-row">
+            <label for="redbot-script-code">Redbot round script</label>
+            <button id="copy-redbot-prompt" class="secondary compact" type="button">Copy Redbot prompt</button>
+          </div>
+          <textarea id="redbot-script-code" spellcheck="false" placeholder="const reds = recentRounds.slice(0, 5);&#10;if (reds.length === 5 && reds.every((item) => item.bust &lt; 1.98)) {&#10;  await redbot.bet(1);&#10;}" required></textarea>
+          <p class="script-help">
+            Available: <code>round</code>, <code>recentRounds</code>, <code>redbot</code>,
+            and <code>await getHistory(offset, limit)</code>.
+          </p>
+          <div class="dialog-actions">
+            <p id="redbot-script-result" aria-live="polite"></p>
+            <button type="submit">Save script</button>
+          </div>
+        </form>
+      </dialog>
+      <dialog id="redbot-readiness-dialog">
+        <div class="readiness-dialog-content">
+          <div class="dialog-heading">
+            <div>
+              <h2 id="redbot-readiness-title">Redbot is not ready</h2>
+              <p id="redbot-readiness-message">Complete the required steps before enabling automation.</p>
+            </div>
+            <button id="close-redbot-readiness-dialog" class="secondary compact" type="button">Close</button>
+          </div>
+          <ul id="redbot-readiness-list" class="readiness-list"></ul>
+          <p id="redbot-readiness-warning" class="readiness-warning">No wager was sent and the script remains disabled.</p>
+        </div>
+      </dialog>
+      <section class="automation-explorer-panel">
+        <div class="section-heading">
+          <div>
+            <h2>Redbot automation</h2>
+            <p>Run Redbot commands from strategies based on completed-round history.</p>
+          </div>
+          <span id="redbot-automation-status" class="automation-status">0 active</span>
+        </div>
+        <div class="redbot-readiness" aria-live="polite">
+          <div>
+            <span class="explorer-label">Webview readiness</span>
+            <strong id="explorer-value" class="explorer-value-text missing">Waiting for the webview…</strong>
+          </div>
+          <span id="explorer-status" class="automation-status">Waiting…</span>
+        </div>
+        <div class="redbot-balance-summary" aria-live="polite">
+          <div>
+            <span class="explorer-label">Latest Redbot balance</span>
+            <strong id="redbot-balance">Not captured yet</strong>
+          </div>
+          <span id="redbot-balance-updated">Send <code>$bal</code> in the Redbot chat to capture it.</span>
+        </div>
+        <p class="redbot-risk-note">Redbot commands can wager real bits. Review every script and amount before enabling it.</p>
+        <div class="script-table-heading">
+          <div>
+            <h3>Redbot round scripts</h3>
+            <p>Enabled scripts run after every newly completed round.</p>
+          </div>
+          <button id="add-redbot-script" class="compact" type="button">Add script</button>
+        </div>
+        <div class="script-table-wrap">
+          <table class="script-table">
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>Last run</th>
+                <th>Enabled</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="redbot-automation-scripts"></tbody>
+          </table>
+        </div>
+        <div class="script-table-heading redbot-activity-heading">
+          <div>
+            <h3>Redbot bet history</h3>
+            <p>Completed automation bets only, with strategy, trigger round, net change, and settled balance.</p>
+          </div>
+          <div class="activity-pagination">
+            <button id="redbot-activity-first" class="secondary compact icon-only" type="button" aria-label="First page" title="First page" disabled></button>
+            <button id="redbot-activity-previous" class="secondary compact icon-only" type="button" aria-label="Previous page" title="Previous page" disabled></button>
+            <span id="redbot-activity-page">Page 1 of 1</span>
+            <button id="redbot-activity-next" class="secondary compact icon-only" type="button" aria-label="Next page" title="Next page" disabled></button>
+            <button id="redbot-activity-last" class="secondary compact icon-only" type="button" aria-label="Last page" title="Last page" disabled></button>
+          </div>
+        </div>
+        <div class="script-table-wrap">
+          <table class="script-table redbot-activity-table">
+            <thead>
+              <tr>
+                <th>Result</th>
+                <th>Details</th>
+                <th>Amount +/−</th>
+                <th>Balance after</th>
+              </tr>
+            </thead>
+            <tbody id="redbot-activity"></tbody>
+          </table>
+        </div>
+      </section>
+      <section class="webview-panel">
+        <div class="section-heading">
+          <div>
+            <h2>Bustabit WebView</h2>
+            <p>This is the live page used by the round monitor.</p>
+          </div>
+        </div>
+        <div id="webview-frame" class="webview-frame">
+          <webview
+            id="game-webview"
+            webpreferences="contextIsolation=yes"
+          ></webview>
+          <div id="webview-lock" class="webview-lock" hidden>
+            <div class="webview-lock-message">
+              <strong>Redbot automation is running</strong>
+              <span>The Bustabit webview is locked to prevent accidental interaction. Disable every Redbot script to unlock it.</span>
+            </div>
+          </div>
+        </div>
+      </section>
+      <section class="diagnostics-panel developer-only" hidden>
+        <div class="section-heading diagnostics-heading">
+          <div>
+            <h2>Diagnostics</h2>
+            <p id="log-path">Loading log location...</p>
+          </div>
+          <div class="diagnostic-actions">
+            <button id="refresh-logs" class="secondary compact" type="button">Refresh</button>
+            <button id="copy-logs" class="secondary compact" type="button">Copy logs</button>
+            <button id="open-log-folder" class="secondary compact" type="button">
+              Open log folder
+            </button>
+          </div>
+        </div>
+        <pre id="diagnostic-logs" aria-live="polite">Loading diagnostics...</pre>
+      </section>
     </main>
-    <webview id="game-webview" webpreferences="contextIsolation=yes"></webview>
     <script type="module" src="/src/renderer.ts"></script>
   </body>
 </html>

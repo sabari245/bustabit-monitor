@@ -1,6 +1,9 @@
 export const HASH_POLL_SCRIPT = `
 (function () {
-  if (window.__btrackHashPoll) return;
+  if (window.__btrackHashPoll) {
+    window.ipc.log('debug', 'Monitor injection skipped because it is already active');
+    return;
+  }
   window.__btrackHashPoll = true;
 
   var decoder = new TextDecoder();
@@ -9,6 +12,10 @@ export const HASH_POLL_SCRIPT = `
 
   function post(data) {
     window.ipc.postMessage(JSON.stringify(data));
+  }
+
+  function trace(level, message, details) {
+    window.ipc.log(level, message, details);
   }
 
   function table(bytes) {
@@ -36,11 +43,13 @@ export const HASH_POLL_SCRIPT = `
 
   function handleFrame(buffer) {
     var bytes = new Uint8Array(buffer);
+    if (bytes.length < 6) return;
     var colon = bytes.indexOf(58);
     if (bytes[0] !== 46 || colon < 0) return;
 
     var event = decoder.decode(bytes.subarray(1, colon));
     var payload = bytes.subarray(colon + 1);
+    if (payload.length < 8) return;
     var data = table(payload);
 
     if (event === 'gameStarting') {
@@ -59,6 +68,11 @@ export const HASH_POLL_SCRIPT = `
     if (hash === lastHash) return;
 
     lastHash = hash;
+    trace('debug', 'Completed round decoded', {
+      id: gameId,
+      bust: Math.round(data.view.getFloat64(data.start + bustField, true) * 100) / 100,
+      hash: hash.slice(0, 12)
+    });
     post({
       id: gameId,
       hash: hash,
@@ -66,18 +80,37 @@ export const HASH_POLL_SCRIPT = `
     });
   }
 
+  function safelyHandleFrame(buffer) {
+    try {
+      handleFrame(buffer);
+    } catch (error) {
+      trace('warn', 'Ignored an unreadable WebSocket frame', {
+        bytes: buffer.byteLength,
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
+  }
+
   function handleMessage(event) {
-    if (event.data instanceof ArrayBuffer) handleFrame(event.data);
-    else if (event.data instanceof Blob) event.data.arrayBuffer().then(handleFrame);
+    if (event.data instanceof ArrayBuffer) safelyHandleFrame(event.data);
+    else if (event.data instanceof Blob) {
+      event.data.arrayBuffer().then(safelyHandleFrame).catch(function (error) {
+        trace('warn', 'Could not read a WebSocket blob', {
+          error: error instanceof Error ? error.message : String(error)
+        });
+      });
+    }
   }
 
   var OriginalWebSocket = window.WebSocket;
   window.WebSocket = new Proxy(OriginalWebSocket, {
     construct: function (Target, args) {
       var socket = new Target(...args);
+      trace('debug', 'WebSocket connection observed');
       socket.addEventListener('message', handleMessage);
       return socket;
     }
   });
+  trace('info', 'Bustabit WebSocket monitor installed');
 })();
 `;

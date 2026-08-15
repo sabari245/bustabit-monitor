@@ -1,0 +1,64 @@
+name: Windows installers
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-installers-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows-installers:
+    name: Build Windows EXE and MSI
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.21.0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install WiX Toolset
+        shell: pwsh
+        run: |
+          choco install wixtoolset --version=3.14.1.20250415 --yes --no-progress
+          Get-Command candle.exe
+          Get-Command light.exe
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Build Windows installers
+        run: pnpm make --platform=win32 --arch=x64
+
+      - name: Upload Windows installers
+        uses: actions/upload-artifact@v4
+        with:
+          name: bustabit-monitor-windows-x64
+          if-no-files-found: error
+          path: |
+            out/make/**/*.exe
+            out/make/**/*.msi
+            out/make/**/*.nupkg
+            out/make/**/RELEASES
