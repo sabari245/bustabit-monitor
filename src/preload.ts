@@ -32,6 +32,8 @@ try {
       ipcRenderer.invoke('redbot:activity:store', messages),
     trackRedbotAutomationCommand: (command: RedbotAutomationCommand) =>
       ipcRenderer.invoke('redbot:command:track', command),
+    discardRedbotAutomationCommand: (trackingId: string) =>
+      ipcRenderer.invoke('redbot:command:discard', trackingId),
   });
 } catch (error) {
   ipcRenderer.send(

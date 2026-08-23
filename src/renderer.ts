@@ -741,13 +741,20 @@ function createRedbotApi(round: StoredGame, script: AutomationScript): RedbotApi
       (item) => item.id === script.id && item.enabled,
     );
     if (!stillEnabled) throw new Error('The Redbot script was disabled before sending');
-    await sendRedbotCommand(command);
-    await window.electronAPI.trackRedbotAutomationCommand({
+    const trackingId = await window.electronAPI.trackRedbotAutomationCommand({
       scriptId: script.id,
       scriptName: script.name,
       triggerRoundId: round.id,
       command,
     });
+    try {
+      await sendRedbotCommand(command);
+    } catch (error) {
+      if (trackingId) {
+        await window.electronAPI.discardRedbotAutomationCommand(trackingId);
+      }
+      throw error;
+    }
     logRenderer('info', 'redbot', 'Redbot command sent', {
       roundId: round.id,
       commandName: command.trim().split(/\s+/)[0],

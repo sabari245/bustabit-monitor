@@ -116,7 +116,8 @@ declare global {
       ) => Promise<TelegramResult>;
       getRedbotBets: (offset?: number, limit?: number) => Promise<RedbotBetPage>;
       storeRedbotChatMessages: (messages: RedbotChatMessage[]) => Promise<number>;
-      trackRedbotAutomationCommand: (command: RedbotAutomationCommand) => Promise<void>;
+      trackRedbotAutomationCommand: (command: RedbotAutomationCommand) => Promise<string | null>;
+      discardRedbotAutomationCommand: (trackingId: string) => Promise<void>;
     };
   }
 }

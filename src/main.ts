@@ -589,8 +589,8 @@ function trackRedbotAutomationCommand(input: RedbotAutomationCommand) {
     throw new Error('Invalid Redbot automation command metadata');
   }
   const wager = parseAutomationWager(input.command);
-  if (!wager) return;
-  trackedRedbotBets.push({
+  if (!wager) return null;
+  const trackedBet: TrackedRedbotBet = {
     id: randomUUID(),
     scriptId: input.scriptId,
     scriptName: input.scriptName.slice(0, 80),
@@ -605,7 +605,26 @@ function trackRedbotAutomationCommand(input: RedbotAutomationCommand) {
     netBits: null,
     balanceAfterBits: null,
     createdAt: new Date().toISOString(),
-  });
+  };
+  trackedRedbotBets.push(trackedBet);
+  saveRedbotAutomationBets();
+  return trackedBet.id;
+}
+
+function discardRedbotAutomationCommand(trackingId: string) {
+  if (typeof trackingId !== 'string' || !trackingId) {
+    throw new Error('Invalid Redbot automation tracking ID');
+  }
+  const trackedBet = trackedRedbotBets.find(
+    (bet) => bet.id === trackingId && bet.status === 'dispatched',
+  );
+  if (!trackedBet) return;
+
+  trackedRedbotBets = trackedRedbotBets.filter((bet) => bet.id !== trackingId);
+  redbotOutcomeQueue = redbotOutcomeQueue.filter(
+    (entry) => entry.trackedBetId !== trackingId,
+  );
+  refreshPublicRedbotBets();
   saveRedbotAutomationBets();
 }
 
@@ -885,10 +904,18 @@ function registerIpcHandlers() {
   });
   ipcMain.handle('redbot:command:track', (_event, command: RedbotAutomationCommand) => {
     try {
-      trackRedbotAutomationCommand(command);
+      return trackRedbotAutomationCommand(command);
     } catch (error) {
       log('error', 'redbot', 'Could not track Redbot automation command', error);
       throw new Error(`Could not track Redbot command: ${getErrorMessage(error)}`);
+    }
+  });
+  ipcMain.handle('redbot:command:discard', (_event, trackingId: string) => {
+    try {
+      discardRedbotAutomationCommand(trackingId);
+    } catch (error) {
+      log('error', 'redbot', 'Could not discard Redbot automation command', error);
+      throw new Error(`Could not discard Redbot command: ${getErrorMessage(error)}`);
     }
   });
   ipcMain.handle('automation:get', getAutomationSettings);
